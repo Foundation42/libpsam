@@ -12,11 +12,13 @@ let isBun = false;
 
 try {
   // Try Bun first
+  // @ts-ignore - optional bun-specific module
   FFI = await import('bun:ffi');
   isBun = true;
 } catch {
   try {
     // Fall back to Node.js ffi-napi (if available)
+    // @ts-ignore - optional Node.js module
     FFI = await import('ffi-napi');
   } catch {
     console.warn('No FFI implementation available. Native bindings require Bun or ffi-napi.');

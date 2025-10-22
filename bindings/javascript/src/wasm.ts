@@ -147,13 +147,13 @@ export class PSAMWASM implements TrainablePSAM {
 
     // Read predictions
     const ids: number[] = [];
-    const scores: number[] = [];
+    const scoresArray: number[] = [];
 
     if (numPreds > 0) {
       for (let i = 0; i < numPreds; i++) {
         const offset = predsPtr / 4 + i * 3; // 3 floats per prediction (token is uint32, score/prob are float)
         ids.push(this.module.HEAPU32[offset]);
-        scores.push(this.module.HEAPF32[offset + 1]);
+        scoresArray.push(this.module.HEAPF32[offset + 1]);
       }
     }
 
@@ -161,7 +161,7 @@ export class PSAMWASM implements TrainablePSAM {
     this.module._free(contextPtr);
     this.module._free(predsPtr);
 
-    return { ids, scores };
+    return { ids, scores: new Float32Array(scoresArray) };
   }
 
   sample(context: TokenId[], temperature: number = 1.0): TokenId {
@@ -214,21 +214,28 @@ export class PSAMWASM implements TrainablePSAM {
   }
 
   stats(): ModelStats {
-    // Allocate memory for stats struct
-    const statsPtr = this.module._malloc(32); // Approximate size
+    // psam_stats_t struct layout (from psam.h):
+    // uint32_t vocab_size     (4 bytes, offset 0)
+    // uint32_t row_count      (4 bytes, offset 4)
+    // uint64_t edge_count     (8 bytes, offset 8)
+    // uint64_t total_tokens   (8 bytes, offset 16)
+    // size_t memory_bytes     (4/8 bytes, offset 24)
+    // Total: 28 bytes (32-bit) or 32 bytes (64-bit)
+
+    const statsPtr = this.module._malloc(32);
 
     const psam_get_stats = this.module.cwrap('psam_get_stats', 'number', ['number', 'number']);
     psam_get_stats(this.handle, statsPtr);
 
-    // Read stats (this is approximate, actual struct may differ)
-    const statsView = new Uint32Array(this.module.HEAPU32.buffer, statsPtr, 8);
+    // Read as 32-bit words
+    const view32 = new Uint32Array(this.module.HEAPU32.buffer, statsPtr, 8);
 
     const stats: ModelStats = {
-      vocabSize: statsView[0],
-      totalTokens: Number(BigInt(statsView[1]) | (BigInt(statsView[2]) << 32n)),
-      rowCount: statsView[3],
-      edgeCount: Number(BigInt(statsView[4]) | (BigInt(statsView[5]) << 32n)),
-      memoryBytes: Number(BigInt(statsView[6]) | (BigInt(statsView[7]) << 32n)),
+      vocabSize: view32[0],
+      rowCount: view32[1],
+      edgeCount: Number(BigInt(view32[2]) | (BigInt(view32[3]) << 32n)),
+      totalTokens: Number(BigInt(view32[4]) | (BigInt(view32[5]) << 32n)),
+      memoryBytes: Number(BigInt(view32[6]) | (BigInt(view32[7]) << 32n)),
     };
 
     this.module._free(statsPtr);
@@ -245,5 +252,5 @@ export class PSAMWASM implements TrainablePSAM {
 }
 
 export function isWASMAvailable(): boolean {
-  return typeof WebAssembly !== 'undefined';
+  return typeof globalThis.WebAssembly !== 'undefined';
 }

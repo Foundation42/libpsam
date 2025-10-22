@@ -52,14 +52,20 @@ export function getBestImplementation(prefer: Implementation = 'auto'): typeof P
 /**
  * Create a PSAM model using the best available implementation
  */
-export function createPSAM(
+export async function createPSAM(
   vocabSize: number,
   window: number,
   topK: number,
   prefer: Implementation = 'auto'
-): TrainablePSAM {
+): Promise<TrainablePSAM> {
   const Implementation = getBestImplementation(prefer);
-  return new Implementation(vocabSize, window, topK);
+
+  // PSAMWASM uses async create(), PSAMNative uses constructor
+  if (Implementation === PSAMWASM) {
+    return await PSAMWASM.create(vocabSize, window, topK);
+  } else {
+    return new PSAMNative(vocabSize, window, topK);
+  }
 }
 
 /**
