@@ -5,8 +5,16 @@ on:
     branches: [main]
     paths:
       - 'demo/**'
+      - 'core/**'
+      - 'bindings/wasm/**'
       - '.github/workflows/deploy-demo.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
+  # Also trigger when a new release is published (which includes WASM)
+  workflow_run:
+    workflows: ["Release"]
+    types:
+      - completed
 
 permissions:
   contents: read
