@@ -51,11 +51,23 @@ jobs:
         run: |
           mkdir -p dist
           cd build
+
+          # Find the library file
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp Release/${{ matrix.artifact }} ../dist/ || cp ${{ matrix.artifact }} ../dist/
+            FOUND=$(find . -name "${{ matrix.artifact }}" | head -1)
           else
-            cp ${{ matrix.artifact }} ../dist/
+            FOUND=$(find . -name "${{ matrix.artifact }}" | head -1)
           fi
+
+          if [ -z "$FOUND" ]; then
+            echo "❌ Could not find ${{ matrix.artifact }}"
+            echo "Files in build directory:"
+            find . -name "*.so" -o -name "*.dylib" -o -name "*.dll"
+            exit 1
+          fi
+
+          echo "✓ Found library: $FOUND"
+          cp "$FOUND" ../dist/${{ matrix.artifact }}
           cd ../dist
           tar -czf libpsam-${{ matrix.platform }}.tar.gz ${{ matrix.artifact }}
 
