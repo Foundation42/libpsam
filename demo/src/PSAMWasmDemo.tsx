@@ -38,6 +38,36 @@ const PSAMWasmDemo = () => {
   const [inferenceInput, setInferenceInput] = useState("luna loved to explore the");
   const [predictions, setPredictions] = useState<{ token: number; word: string; score: number; probability: number }[]>([]);
 
+  // Auto-generation
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationHistory, setGenerationHistory] = useState<{
+    input: string;
+    predicted: string;
+    score: number;
+    probability: number;
+    confidence: number;
+    alternatives: { word: string; probability: number }[];
+  }[]>([]);
+
+  // Parameters
+  const [contextWindow, setContextWindow] = useState(8);
+  const [topK, setTopK] = useState(32);
+  const [minEvidence, setMinEvidence] = useState(1);
+  const [alpha, setAlpha] = useState(0.1); // distance decay
+  const [enableIdf, setEnableIdf] = useState(true);
+  const [enablePpmi, setEnablePpmi] = useState(true);
+  const [edgeDropout, setEdgeDropout] = useState(0.0);
+  const [temperature, setTemperature] = useState(1.0);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Training state
+  const [isTraining, setIsTraining] = useState(false);
+  const [trainingStep, setTrainingStep] = useState(0);
+  const [tokens, setTokens] = useState<number[]>([]);
+
+  // Stats
+  const [stats, setStats] = useState<any>(null);
+
   // Live prediction updates
   useEffect(() => {
     if (!psam || !trained) {
@@ -76,36 +106,6 @@ const PSAMWasmDemo = () => {
       setPredictions([]);
     }
   }, [inferenceInput, psam, trained, vocab, contextWindow, topK, temperature]);
-
-  // Auto-generation
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [generationHistory, setGenerationHistory] = useState<{
-    input: string;
-    predicted: string;
-    score: number;
-    probability: number;
-    confidence: number;
-    alternatives: { word: string; probability: number }[];
-  }[]>([]);
-
-  // Parameters
-  const [contextWindow, setContextWindow] = useState(8);
-  const [topK, setTopK] = useState(32);
-  const [minEvidence, setMinEvidence] = useState(1);
-  const [alpha, setAlpha] = useState(0.1); // distance decay
-  const [enableIdf, setEnableIdf] = useState(true);
-  const [enablePpmi, setEnablePpmi] = useState(true);
-  const [edgeDropout, setEdgeDropout] = useState(0.0);
-  const [temperature, setTemperature] = useState(1.0);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  // Training state
-  const [isTraining, setIsTraining] = useState(false);
-  const [trainingStep, setTrainingStep] = useState(0);
-  const [tokens, setTokens] = useState<number[]>([]);
-
-  // Stats
-  const [stats, setStats] = useState<any>(null);
 
   // Load WASM module on mount
   useEffect(() => {
