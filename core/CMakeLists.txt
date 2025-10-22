@@ -26,8 +26,12 @@ target_include_directories(psam
 target_link_libraries(psam
     PRIVATE
         Threads::Threads
-        m  # Math library
 )
+
+# Link math library on Unix-like systems (not needed on Windows)
+if(NOT WIN32)
+    target_link_libraries(psam PRIVATE m)
+endif()
 
 # Library properties
 set_target_properties(psam PROPERTIES
