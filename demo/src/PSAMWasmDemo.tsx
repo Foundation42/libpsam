@@ -59,7 +59,8 @@ const PSAMWasmDemo = () => {
         const Module = await (window as any).createPSAMModule({
           locateFile: (path: string) => {
             if (path.endsWith('.wasm')) {
-              return '/wasm/' + path;
+              // Use relative path to work with GitHub Pages base path
+              return './wasm/' + path;
             }
             return path;
           }
