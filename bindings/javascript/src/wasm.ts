@@ -252,5 +252,6 @@ export class PSAMWASM implements TrainablePSAM {
 }
 
 export function isWASMAvailable(): boolean {
-  return typeof WebAssembly !== 'undefined';
+  // Use indirect access to avoid TypeScript error
+  return typeof (globalThis as any).WebAssembly !== 'undefined';
 }
