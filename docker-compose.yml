@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  # WASM build service
+  wasm-builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.wasm
+    volumes:
+      - .:/workspace
+    command: bash -c "cd bindings/wasm && ./build.sh"
+
+  # Native build and test service
+  native-builder:
+    image: ubuntu:22.04
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: >
+      bash -c "
+      apt-get update &&
+      apt-get install -y build-essential cmake &&
+      mkdir -p build &&
+      cd build &&
+      cmake ../core &&
+      make -j\$$(nproc) &&
+      echo '✅ Native build complete!' &&
+      if [ -f ../examples/c/basic_usage ]; then
+        echo 'Running basic_usage test...' &&
+        ../examples/c/basic_usage;
+      fi
+      "
+
+  # Demo development server
+  demo-dev:
+    image: node:18
+    volumes:
+      - .:/workspace
+      - demo-node-modules:/workspace/demo/node_modules
+    working_dir: /workspace/demo
+    ports:
+      - "5173:5173"
+    command: bash -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - wasm-builder
+
+volumes:
+  demo-node-modules:
