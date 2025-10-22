@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>libpsam - Browser Example</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        .header {
+            border: 2px solid #569cd6;
+            padding: 20px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        .section {
+            background: #252526;
+            border-left: 4px solid #4ec9b0;
+            padding: 15px;
+            margin: 15px 0;
+        }
+        .output {
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            padding: 10px;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+        }
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-family: inherit;
+            margin: 5px;
+        }
+        button:hover {
+            background: #1177bb;
+        }
+        .success { color: #4ec9b0; }
+        .error { color: #f48771; }
+        .info { color: #569cd6; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>libpsam - Browser Example</h1>
+        <p>WebAssembly-powered sequence prediction</p>
+    </div>
+
+    <div class="section">
+        <h2>🚀 Quick Start</h2>
+        <p>This example demonstrates libpsam running in your browser using WebAssembly.</p>
+        <button onclick="runExample()">Run Example</button>
+        <button onclick="clearOutput()">Clear Output</button>
+    </div>
+
+    <div class="section">
+        <h2>📊 Output</h2>
+        <div id="output" class="output">Click "Run Example" to start...</div>
+    </div>
+
+    <script type="module">
+        // Note: This is a placeholder. Actual WASM loading would look like:
+        // import { PSAMWASM } from '@foundation42/libpsam/wasm';
+
+        function log(message, type = 'info') {
+            const output = document.getElementById('output');
+            const span = document.createElement('span');
+            span.className = type;
+            span.textContent = message + '\n';
+            output.appendChild(span);
+        }
+
+        function clearLog() {
+            document.getElementById('output').textContent = '';
+        }
+
+        window.clearOutput = clearLog;
+
+        window.runExample = async function() {
+            clearLog();
+
+            log('╔════════════════════════════════════════════════════════════╗');
+            log('║          libpsam - WASM Example                            ║');
+            log('╚════════════════════════════════════════════════════════════╝\n');
+
+            try {
+                log('📦 Initializing WASM module...', 'info');
+
+                // Placeholder for actual WASM loading
+                // const psam = await PSAMWASM.create(100, 8, 10);
+
+                log('❌ WASM module not yet built', 'error');
+                log('   Build with: cd bindings/wasm && ./build.sh\n', 'info');
+
+                log('📖 Example workflow:', 'info');
+                log('   1. Create model with vocabulary size, window, and top-K');
+                log('   2. Train on token sequences');
+                log('   3. Finalize training');
+                log('   4. Make predictions');
+                log('   5. Sample from distribution\n');
+
+                log('🔍 Code example:', 'info');
+                log('   const psam = await PSAMWASM.create(100, 8, 10);');
+                log('   psam.trainBatch([1, 2, 3, 4, 5]);');
+                log('   psam.finalizeTraining();');
+                log('   const preds = psam.predict([1, 2, 3], 5);');
+                log('   console.log(preds);\n');
+
+                log('✓ Once built, this will run entirely in your browser!', 'success');
+                log('  No server required, near-native performance\n', 'success');
+
+            } catch (error) {
+                log(`❌ Error: ${error.message}`, 'error');
+            }
+        };
+
+        // Auto-run on load
+        window.addEventListener('load', () => {
+            // Uncomment to auto-run: runExample();
+        });
+    </script>
+</body>
+</html>

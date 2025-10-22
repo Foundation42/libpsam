@@ -1,0 +1,70 @@
+{
+  "name": "@foundation42/libpsam",
+  "version": "0.1.0",
+  "description": "Fast, lightweight sequence prediction using learned token associations",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "import": "./dist/native.js"
+    },
+    "./wasm": {
+      "types": "./dist/wasm.d.ts",
+      "import": "./dist/wasm.js"
+    }
+  },
+  "files": [
+    "dist",
+    "native/*.node",
+    "wasm/*.wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.cjs.json",
+    "build:native": "node-gyp rebuild",
+    "build:wasm": "bash ../wasm/build.sh",
+    "clean": "rm -rf dist build",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "nlp",
+    "sequence-prediction",
+    "language-model",
+    "association-memory",
+    "psam",
+    "sparse-matrix",
+    "machine-learning"
+  ],
+  "author": "Foundation42",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Foundation42/libpsam.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Foundation42/libpsam/issues"
+  },
+  "homepage": "https://github.com/Foundation42/libpsam#readme",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "node-gyp": "^10.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

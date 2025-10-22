@@ -1,0 +1,46 @@
+# Build artifacts
+build/
+dist/
+*.o
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Node.js
+node_modules/
+*.tsbuildinfo
+
+# Demo build
+demo/dist/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+
+# WASM
+*.wasm
+*.wasm.map
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

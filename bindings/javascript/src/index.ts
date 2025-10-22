@@ -1,0 +1,75 @@
+/**
+ * libpsam - JavaScript/TypeScript bindings
+ *
+ * Auto-detects the best available implementation:
+ * 1. Native (FFI) - Fastest, requires libpsam.so
+ * 2. WASM - Browser-compatible, moderate performance
+ */
+
+export * from './types.js';
+export { PSAMNative, isNativeAvailable } from './native.js';
+export { PSAMWASM, isWASMAvailable } from './wasm.js';
+
+import { PSAMNative, isNativeAvailable } from './native.js';
+import { PSAMWASM, isWASMAvailable } from './wasm.js';
+import type { TrainablePSAM } from './types.js';
+
+/**
+ * Implementation preference
+ */
+export type Implementation = 'native' | 'wasm' | 'auto';
+
+/**
+ * Get the best available PSAM implementation
+ */
+export function getBestImplementation(prefer: Implementation = 'auto'): typeof PSAMNative | typeof PSAMWASM {
+  if (prefer === 'native') {
+    if (!isNativeAvailable()) {
+      throw new Error('Native implementation not available. Build libpsam.so first.');
+    }
+    return PSAMNative;
+  }
+
+  if (prefer === 'wasm') {
+    if (!isWASMAvailable()) {
+      throw new Error('WASM implementation not available.');
+    }
+    return PSAMWASM;
+  }
+
+  // Auto mode: try native first, fall back to WASM
+  if (isNativeAvailable()) {
+    return PSAMNative;
+  }
+
+  if (isWASMAvailable()) {
+    return PSAMWASM;
+  }
+
+  throw new Error('No PSAM implementation available. Build native library or WASM module.');
+}
+
+/**
+ * Create a PSAM model using the best available implementation
+ */
+export function createPSAM(
+  vocabSize: number,
+  window: number,
+  topK: number,
+  prefer: Implementation = 'auto'
+): TrainablePSAM {
+  const Implementation = getBestImplementation(prefer);
+  return new Implementation(vocabSize, window, topK);
+}
+
+/**
+ * Default export for convenience
+ */
+export default {
+  createPSAM,
+  getBestImplementation,
+  PSAMNative,
+  PSAMWASM,
+  isNativeAvailable,
+  isWASMAvailable,
+};
