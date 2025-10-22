@@ -113,15 +113,16 @@ const PSAMWasmDemo = () => {
           const viewF32 = new Float32Array(Module.HEAPF32.buffer, configPtr, 8);
           const view8 = new Uint8Array(Module.HEAPU8.buffer, configPtr, 32);
 
-          // Fill config struct
+          // Fill config struct (matching C struct layout with padding)
           view32[0] = config.vocabSize;        // offset 0: vocab_size (uint32_t)
           view32[1] = config.window;           // offset 4: window (uint32_t)
           view32[2] = config.topK;             // offset 8: top_k (uint32_t)
           viewF32[3] = config.alpha;           // offset 12: alpha (float)
           viewF32[4] = config.minEvidence;     // offset 16: min_evidence (float)
           view8[20] = config.enableIdf ? 1 : 0;   // offset 20: enable_idf (bool)
-          view8[24] = config.enablePpmi ? 1 : 0;  // offset 24: enable_ppmi (bool)
-          viewF32[7] = config.edgeDropout;     // offset 28: edge_dropout (float)
+          view8[21] = config.enablePpmi ? 1 : 0;  // offset 21: enable_ppmi (bool)
+          // offset 22-23: padding
+          viewF32[6] = config.edgeDropout;     // offset 24: edge_dropout (float)
 
           const psam_create_with_config = Module.cwrap('psam_create_with_config', 'number', ['number']);
           const handle = psam_create_with_config(configPtr);
