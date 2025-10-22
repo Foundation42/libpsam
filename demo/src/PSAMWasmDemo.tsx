@@ -693,6 +693,18 @@ const PSAMWasmDemo = () => {
               {/* Action Buttons */}
               <div className="flex gap-3 mb-6">
                 <button
+                  onClick={() => {
+                    if (!psam || !trained || predictions.length === 0) return;
+                    const topPrediction = predictions[0];
+                    setInferenceInput(inferenceInput + ' ' + topPrediction.word);
+                  }}
+                  disabled={!trained || predictions.length === 0}
+                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+                >
+                  <Zap className="w-5 h-5" />
+                  Generate Next
+                </button>
+                <button
                   onClick={handleGenerate}
                   disabled={!trained || isGenerating}
                   className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
