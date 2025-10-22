@@ -36,15 +36,34 @@ const PSAMWasmDemo = () => {
 
   // Inference
   const [inferenceInput, setInferenceInput] = useState("the dog sat on the");
-  const [predictions, setPredictions] = useState<{ token: number; word: string; score: number }[]>([]);
+  const [predictions, setPredictions] = useState<{ token: number; word: string; score: number; probability: number }[]>([]);
 
   // Auto-generation
   const [isGenerating, setIsGenerating] = useState(false);
-  const [generationHistory, setGenerationHistory] = useState<string[]>([]);
+  const [generationHistory, setGenerationHistory] = useState<{
+    input: string;
+    predicted: string;
+    score: number;
+    probability: number;
+    confidence: number;
+    alternatives: { word: string; probability: number }[];
+  }[]>([]);
 
   // Parameters
+  const [contextWindow, setContextWindow] = useState(8);
+  const [topK, setTopK] = useState(32);
+  const [minEvidence, setMinEvidence] = useState(1);
+  const [alpha, setAlpha] = useState(0.1); // distance decay
+  const [enableIdf, setEnableIdf] = useState(true);
+  const [enablePpmi, setEnablePpmi] = useState(true);
+  const [edgeDropout, setEdgeDropout] = useState(0.0);
   const [temperature, setTemperature] = useState(1.0);
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Training state
+  const [isTraining, setIsTraining] = useState(false);
+  const [trainingStep, setTrainingStep] = useState(0);
+  const [tokens, setTokens] = useState<number[]>([]);
 
   // Stats
   const [stats, setStats] = useState<any>(null);
@@ -77,10 +96,37 @@ const PSAMWasmDemo = () => {
           }
         });
 
-        // Create wrapper for PSAM instance
-        const create = (vocabSize: number, window: number, topK: number): PSAMInstance => {
-          const psam_create = Module.cwrap('psam_create', 'number', ['number', 'number', 'number']);
-          const handle = psam_create(vocabSize, window, topK);
+        // Create wrapper for PSAM instance with full config
+        const create = (config: {
+          vocabSize: number;
+          window: number;
+          topK: number;
+          alpha: number;
+          minEvidence: number;
+          enableIdf: boolean;
+          enablePpmi: boolean;
+          edgeDropout: number;
+        }): PSAMInstance => {
+          // Allocate config struct (32 bytes)
+          const configPtr = Module._malloc(32);
+          const view32 = new Uint32Array(Module.HEAPU32.buffer, configPtr, 8);
+          const viewF32 = new Float32Array(Module.HEAPF32.buffer, configPtr, 8);
+          const view8 = new Uint8Array(Module.HEAPU8.buffer, configPtr, 32);
+
+          // Fill config struct
+          view32[0] = config.vocabSize;        // offset 0: vocab_size (uint32_t)
+          view32[1] = config.window;           // offset 4: window (uint32_t)
+          view32[2] = config.topK;             // offset 8: top_k (uint32_t)
+          viewF32[3] = config.alpha;           // offset 12: alpha (float)
+          viewF32[4] = config.minEvidence;     // offset 16: min_evidence (float)
+          view8[20] = config.enableIdf ? 1 : 0;   // offset 20: enable_idf (bool)
+          view8[24] = config.enablePpmi ? 1 : 0;  // offset 24: enable_ppmi (bool)
+          viewF32[7] = config.edgeDropout;     // offset 28: edge_dropout (float)
+
+          const psam_create_with_config = Module.cwrap('psam_create_with_config', 'number', ['number']);
+          const handle = psam_create_with_config(configPtr);
+
+          Module._free(configPtr);
 
           if (!handle) {
             throw new Error('Failed to create PSAM model');
@@ -180,9 +226,9 @@ const PSAMWasmDemo = () => {
           };
         };
 
-        // Create PSAM instance (will be recreated when training)
-        const instance = create(1000, 8, 32);
-        setPsam(instance);
+        // Store the create function and Module for later use
+        (window as any).__psamCreate = create;
+        (window as any).__psamModule = Module;
         setLoading(false);
       } catch (err) {
         console.error('Failed to load WASM:', err);
@@ -200,28 +246,66 @@ const PSAMWasmDemo = () => {
     };
   }, []);
 
+  // Effect for auto-training
+  useEffect(() => {
+    if (isTraining && trainingStep < tokens.length - 1) {
+      const timer = setTimeout(() => {
+        setTrainingStep(s => s + 1);
+      }, 50);
+      return () => clearTimeout(timer);
+    } else if (isTraining && trainingStep >= tokens.length - 1) {
+      setIsTraining(false);
+    }
+  }, [isTraining, trainingStep, tokens.length]);
+
   const tokenize = (text: string): { tokens: number[]; vocab: string[] } => {
-    const words = text.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+    // Match JS version tokenization: words and punctuation
+    const words = text.toLowerCase().match(/\w+|[.,!?;]/g) || [];
     const uniqueWords = [...new Set(words)];
     const tokens = words.map(w => uniqueWords.indexOf(w));
     return { tokens, vocab: uniqueWords };
   };
 
   const handleTrain = () => {
-    if (!psam) return;
+    const createFn = (window as any).__psamCreate;
+    if (!createFn) return;
 
     try {
-      const { tokens, vocab: newVocab } = tokenize(text);
+      // Destroy old model if exists
+      if (psam) {
+        psam.destroy();
+        setPsam(null);
+      }
+
+      // Tokenize text
+      const { tokens: newTokens, vocab: newVocab } = tokenize(text);
       setVocab(newVocab);
+      setTokens(newTokens);
+      setTrainingStep(0);
 
-      psam.trainBatch(tokens);
-      psam.finalizeTraining();
+      // Create new model with current parameters
+      const instance = createFn({
+        vocabSize: newVocab.length,
+        window: contextWindow,
+        topK: topK,
+        alpha: alpha,
+        minEvidence: minEvidence,
+        enableIdf: enableIdf,
+        enablePpmi: enablePpmi,
+        edgeDropout: edgeDropout,
+      });
 
-      const modelStats = psam.stats();
+      // Train
+      instance.trainBatch(newTokens);
+      instance.finalizeTraining();
+
+      const modelStats = instance.stats();
       setStats(modelStats);
+      setPsam(instance);
       setTrained(true);
       setPredictions([]);
       setGenerationHistory([]);
+      setTrainingStep(newTokens.length - 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Training failed');
     }
@@ -231,7 +315,7 @@ const PSAMWasmDemo = () => {
     if (!psam || !trained) return;
 
     try {
-      const contextWords = inferenceInput.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+      const contextWords = inferenceInput.toLowerCase().match(/\w+|[.,!?;]/g) || [];
       const contextTokens = contextWords.map(w => vocab.indexOf(w)).filter(t => t >= 0);
 
       if (contextTokens.length === 0) {
@@ -239,12 +323,20 @@ const PSAMWasmDemo = () => {
         return;
       }
 
-      const result = psam.predict(contextTokens.slice(-8), 10);
+      const result = psam.predict(contextTokens.slice(-contextWindow), topK);
+
+      // Calculate probabilities with temperature
+      const logits = Array.from(result.scores).map(s => s / temperature);
+      const maxLogit = Math.max(...logits);
+      const expScores = logits.map(l => Math.exp(l - maxLogit));
+      const sumExp = expScores.reduce((a, b) => a + b, 0);
+      const probs = expScores.map(e => e / sumExp);
 
       const preds = result.ids.map((id, i) => ({
         token: id,
         word: vocab[id] || `<${id}>`,
-        score: result.scores[i]
+        score: result.scores[i],
+        probability: probs[i]
       }));
 
       setPredictions(preds);
@@ -257,41 +349,60 @@ const PSAMWasmDemo = () => {
     if (!psam || !trained || isGenerating) return;
 
     setIsGenerating(true);
-    const contextWords = inferenceInput.toLowerCase().split(/\s+/).filter(w => w.length > 0);
-    const history: string[] = [];
+    const contextWords = inferenceInput.toLowerCase().match(/\w+|[.,!?;]/g) || [];
+    const history: typeof generationHistory = [];
 
     let currentTokens = contextWords.map(w => vocab.indexOf(w)).filter(t => t >= 0);
+    let currentInput = inferenceInput;
 
     for (let i = 0; i < 10; i++) {
-      const result = psam.predict(currentTokens.slice(-8), 10);
+      const result = psam.predict(currentTokens.slice(-contextWindow), topK);
 
       if (result.ids.length === 0) break;
 
-      // Sample with temperature
+      // Calculate probabilities with temperature
       const logits = Array.from(result.scores).map(s => s / temperature);
       const maxLogit = Math.max(...logits);
       const expScores = logits.map(l => Math.exp(l - maxLogit));
       const sumExp = expScores.reduce((a, b) => a + b, 0);
       const probs = expScores.map(e => e / sumExp);
 
+      // Sample from distribution
       const rand = Math.random();
       let cumsum = 0;
-      let selectedToken = result.ids[0];
+      let selectedIdx = 0;
 
       for (let j = 0; j < probs.length; j++) {
         cumsum += probs[j];
         if (rand < cumsum) {
-          selectedToken = result.ids[j];
+          selectedIdx = j;
           break;
         }
       }
 
+      const selectedToken = result.ids[selectedIdx];
       const word = vocab[selectedToken] || `<${selectedToken}>`;
-      history.push(word);
+
+      const confidence = result.ids.length >= 2 ? result.scores[0] / result.scores[1] : Infinity;
+
+      history.push({
+        input: currentInput,
+        predicted: word,
+        score: result.scores[selectedIdx],
+        probability: probs[selectedIdx],
+        confidence,
+        alternatives: result.ids.slice(1, 3).map((id, i) => ({
+          word: vocab[id] || `<${id}>`,
+          probability: probs[i + 1]
+        }))
+      });
+
+      currentInput = currentInput + ' ' + word;
       currentTokens.push(selectedToken);
     }
 
     setGenerationHistory(history);
+    setInferenceInput(currentInput);
     setIsGenerating(false);
   };
 
@@ -362,22 +473,167 @@ const PSAMWasmDemo = () => {
             </label>
             <textarea
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                setTrained(false);
+                setTrainingStep(0);
+              }}
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono text-sm"
               rows={4}
               placeholder="Enter text to train on..."
             />
           </div>
 
+          {/* Parameters */}
+          <div className="mb-4">
+            <button
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-800 mb-2"
+            >
+              <Settings className="w-4 h-4" />
+              {showAdvanced ? 'Hide' : 'Show'} Parameters
+            </button>
+
+            {showAdvanced && (
+              <div className="p-4 bg-gray-50 rounded-lg space-y-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Context Window</label>
+                    <input
+                      type="number"
+                      value={contextWindow}
+                      onChange={(e) => setContextWindow(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                      min="1"
+                      max="20"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Top-K</label>
+                    <input
+                      type="number"
+                      value={topK}
+                      onChange={(e) => setTopK(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                      min="1"
+                      max="128"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Min Evidence</label>
+                    <input
+                      type="number"
+                      value={minEvidence}
+                      onChange={(e) => setMinEvidence(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                      min="1"
+                      max="5"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Distance Decay (α)</label>
+                    <input
+                      type="number"
+                      value={alpha}
+                      onChange={(e) => setAlpha(parseFloat(e.target.value))}
+                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                      step="0.05"
+                      min="0"
+                      max="1"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Edge Dropout</label>
+                    <input
+                      type="number"
+                      value={edgeDropout}
+                      onChange={(e) => setEdgeDropout(parseFloat(e.target.value))}
+                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                      step="0.05"
+                      min="0"
+                      max="0.5"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">Temperature</label>
+                    <input
+                      type="number"
+                      value={temperature}
+                      onChange={(e) => setTemperature(Math.max(0.1, parseFloat(e.target.value)))}
+                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                      step="0.1"
+                      min="0.1"
+                      max="2"
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={enableIdf}
+                        onChange={(e) => setEnableIdf(e.target.checked)}
+                        className="rounded"
+                      />
+                      <label className="text-xs font-medium text-gray-700">Enable IDF</label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={enablePpmi}
+                        onChange={(e) => setEnablePpmi(e.target.checked)}
+                        className="rounded"
+                      />
+                      <label className="text-xs font-medium text-gray-700">Enable PPMI</label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Train Button */}
           <button
             onClick={handleTrain}
-            disabled={!psam}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 mb-6"
+            disabled={loading}
+            className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 mb-4"
           >
             <Play className="w-5 h-5" />
             Train Model
           </button>
+
+          {/* Training Progress Visualization */}
+          {tokens.length > 0 && (
+            <div className="mb-6">
+              <div className="text-sm text-gray-600 mb-2">
+                Training Progress: {trainingStep} / {tokens.length - 1}
+              </div>
+              <div className="font-mono text-sm p-3 bg-gray-50 rounded border border-gray-200 overflow-x-auto">
+                {tokens.map((_, idx) => {
+                  const word = vocab[tokens[idx]] || '';
+                  return (
+                    <span
+                      key={idx}
+                      className={`mr-1 px-1 rounded ${
+                        idx === trainingStep
+                          ? 'bg-indigo-600 text-white'
+                          : idx < trainingStep
+                          ? 'bg-green-200'
+                          : 'bg-gray-200'
+                      }`}
+                    >
+                      {word}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Stats */}
           {stats && (
@@ -427,37 +683,6 @@ const PSAMWasmDemo = () => {
                 />
               </div>
 
-              {/* Parameters */}
-              <div className="mb-4">
-                <button
-                  onClick={() => setShowAdvanced(!showAdvanced)}
-                  className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-800"
-                >
-                  <Settings className="w-4 h-4" />
-                  {showAdvanced ? 'Hide' : 'Show'} Parameters
-                </button>
-
-                {showAdvanced && (
-                  <div className="mt-3 p-4 bg-gray-50 rounded-lg">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm text-gray-600 mb-1">
-                          Temperature: {temperature.toFixed(2)}
-                        </label>
-                        <input
-                          type="range"
-                          min="0.1"
-                          max="2.0"
-                          step="0.1"
-                          value={temperature}
-                          onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                          className="w-full"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
 
               {/* Action Buttons */}
               <div className="grid grid-cols-2 gap-3 mb-6">
@@ -482,21 +707,21 @@ const PSAMWasmDemo = () => {
               {/* Predictions */}
               {predictions.length > 0 && (
                 <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                  <h4 className="font-medium text-gray-800 mb-3">Predictions</h4>
+                  <h4 className="font-medium text-gray-800 mb-3">Top Predictions</h4>
                   <div className="space-y-2">
                     {predictions.slice(0, 5).map((pred, i) => (
                       <div key={i} className="flex items-center gap-3">
-                        <div className="bg-indigo-100 text-indigo-800 px-3 py-1 rounded text-sm font-mono min-w-[80px]">
-                          {pred.word}
+                        <div className="w-32 text-right font-mono text-xs">
+                          <div>{pred.score.toFixed(3)}</div>
+                          <div className="text-gray-500">({(pred.probability * 100).toFixed(1)}%)</div>
                         </div>
-                        <div className="flex-1 bg-gray-200 rounded-full h-2">
+                        <div className="flex-1 bg-gray-200 rounded-full h-8 overflow-hidden">
                           <div
-                            className="bg-indigo-600 h-2 rounded-full transition-all"
-                            style={{ width: `${Math.min(100, (pred.score + 10) * 5)}%` }}
-                          />
-                        </div>
-                        <div className="text-sm text-gray-600 w-20 text-right font-mono">
-                          {pred.score.toFixed(3)}
+                            className="bg-indigo-600 h-full flex items-center px-3 text-white text-sm font-semibold"
+                            style={{ width: `${pred.probability * 100}%` }}
+                          >
+                            "{pred.word}"
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -506,11 +731,28 @@ const PSAMWasmDemo = () => {
 
               {/* Generation History */}
               {generationHistory.length > 0 && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                  <h4 className="font-medium text-green-800 mb-2">Generated Sequence</h4>
-                  <p className="font-mono text-sm text-gray-800">
-                    {inferenceInput} <span className="text-green-600 font-bold">{generationHistory.join(' ')}</span>
-                  </p>
+                <div className="bg-white rounded-lg border border-gray-200 p-4">
+                  <h4 className="font-medium text-gray-800 mb-3">Generation History</h4>
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {generationHistory.map((item, idx) => (
+                      <div key={idx} className="p-2 bg-gray-50 rounded border border-gray-200 text-sm">
+                        <div className="font-mono mb-1">
+                          <span className="text-gray-600">{item.input}</span>
+                          <span className="text-green-600 font-bold"> {item.predicted}</span>
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          Score: {item.score.toFixed(3)} |
+                          Prob: {(item.probability * 100).toFixed(1)}% |
+                          Conf: {item.confidence.toFixed(2)}x
+                          {item.alternatives.length > 0 && (
+                            <span className="ml-2">
+                              | Alt: {item.alternatives.map((a) => `"${a.word}" (${(a.probability * 100).toFixed(0)}%)`).join(', ')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
