@@ -45,6 +45,7 @@ CFLAGS=(
     -s 'EXPORT_NAME="createPSAMModule"'
     -s EXPORTED_FUNCTIONS='[
         "_psam_create",
+        "_psam_create_with_config",
         "_psam_destroy",
         "_psam_train_token",
         "_psam_train_batch",
