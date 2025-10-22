@@ -21,7 +21,7 @@ const testScenarios = [
   { name: "Simple Pattern", text: "the cat sat on the mat. the dog sat on the rug." },
   { name: "Repetition", text: "a b c d. a b c e. a b c f. a b c g." },
   { name: "Sequences", text: "one two three four. five six seven eight. nine ten eleven twelve." },
-  { name: "Story", text: "the quick brown fox jumps over the lazy dog. the quick brown fox runs through the tall grass." },
+  { name: "Story", text: "once upon a time in a small village, there lived a curious young girl named luna. luna loved to explore the forest near her home. one sunny morning, luna decided to venture deeper into the woods than ever before. she discovered a hidden clearing where magical butterflies danced in the golden sunlight. the butterflies led her to an ancient oak tree with a door carved into its trunk. luna opened the door and found a library filled with books that whispered secrets of the forest. she spent hours reading about the creatures and plants that called the forest home. as the sun began to set, the butterflies guided luna back to the village. from that day on, luna visited the magical library every week, learning more about the wonders of nature. with each visit, the library revealed new secrets. luna learned the language of birds and how to read the patterns in tree bark. the ancient books taught her about healing herbs and the stories written in the stars. one autumn evening, the butterflies brought luna a special gift, a silver key that unlocked a hidden chamber deep within the oak tree. inside the chamber, luna found a crystal that glowed with soft blue light. the crystal showed her visions of the forest's past and glimpses of its future. luna realized she had become the forest's keeper, entrusted with protecting its magic for generations to come." },
 ];
 
 const PSAMWasmDemo = () => {
@@ -35,8 +35,47 @@ const PSAMWasmDemo = () => {
   const [trained, setTrained] = useState(false);
 
   // Inference
-  const [inferenceInput, setInferenceInput] = useState("the dog sat on the");
+  const [inferenceInput, setInferenceInput] = useState("luna loved to explore the");
   const [predictions, setPredictions] = useState<{ token: number; word: string; score: number; probability: number }[]>([]);
+
+  // Live prediction updates
+  useEffect(() => {
+    if (!psam || !trained) {
+      setPredictions([]);
+      return;
+    }
+
+    try {
+      const contextWords = inferenceInput.toLowerCase().match(/\w+|[.,!?;]/g) || [];
+      const contextTokens = contextWords.map(w => vocab.indexOf(w)).filter(t => t >= 0);
+
+      if (contextTokens.length === 0) {
+        setPredictions([]);
+        return;
+      }
+
+      const result = psam.predict(contextTokens.slice(-contextWindow), topK);
+
+      // Calculate probabilities with temperature
+      const logits = Array.from(result.scores).map(s => s / temperature);
+      const maxLogit = Math.max(...logits);
+      const expScores = logits.map(l => Math.exp(l - maxLogit));
+      const sumExp = expScores.reduce((a, b) => a + b, 0);
+      const probs = expScores.map(e => e / sumExp);
+
+      const preds = result.ids.map((id, i) => ({
+        token: id,
+        word: vocab[id] || `<${id}>`,
+        score: result.scores[i],
+        probability: probs[i]
+      }));
+
+      setPredictions(preds);
+    } catch (err) {
+      // Silent fail for live updates
+      setPredictions([]);
+    }
+  }, [inferenceInput, psam, trained, vocab, contextWindow, topK, temperature]);
 
   // Auto-generation
   const [isGenerating, setIsGenerating] = useState(false);
@@ -312,39 +351,6 @@ const PSAMWasmDemo = () => {
     }
   };
 
-  const handlePredict = () => {
-    if (!psam || !trained) return;
-
-    try {
-      const contextWords = inferenceInput.toLowerCase().match(/\w+|[.,!?;]/g) || [];
-      const contextTokens = contextWords.map(w => vocab.indexOf(w)).filter(t => t >= 0);
-
-      if (contextTokens.length === 0) {
-        setError('Context contains no known words');
-        return;
-      }
-
-      const result = psam.predict(contextTokens.slice(-contextWindow), topK);
-
-      // Calculate probabilities with temperature
-      const logits = Array.from(result.scores).map(s => s / temperature);
-      const maxLogit = Math.max(...logits);
-      const expScores = logits.map(l => Math.exp(l - maxLogit));
-      const sumExp = expScores.reduce((a, b) => a + b, 0);
-      const probs = expScores.map(e => e / sumExp);
-
-      const preds = result.ids.map((id, i) => ({
-        token: id,
-        word: vocab[id] || `<${id}>`,
-        score: result.scores[i],
-        probability: probs[i]
-      }));
-
-      setPredictions(preds);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Prediction failed');
-    }
-  };
 
   const handleGenerate = () => {
     if (!psam || !trained || isGenerating) return;
@@ -673,7 +679,7 @@ const PSAMWasmDemo = () => {
               {/* Context Input */}
               <div className="mb-4">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Context (what to predict from)
+                  Context (predictions update as you type)
                 </label>
                 <input
                   type="text"
@@ -684,24 +690,15 @@ const PSAMWasmDemo = () => {
                 />
               </div>
 
-
               {/* Action Buttons */}
-              <div className="grid grid-cols-2 gap-3 mb-6">
-                <button
-                  onClick={handlePredict}
-                  disabled={!trained}
-                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
-                >
-                  <Zap className="w-5 h-5" />
-                  Predict Next
-                </button>
+              <div className="flex gap-3 mb-6">
                 <button
                   onClick={handleGenerate}
                   disabled={!trained || isGenerating}
                   className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                   <RefreshCw className={`w-5 h-5 ${isGenerating ? 'animate-spin' : ''}`} />
-                  Auto-Generate
+                  Auto-Generate (10 tokens)
                 </button>
               </div>
 

@@ -2,10 +2,10 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Play, Pause, RotateCcw, Brain, Settings } from 'lucide-react';
 
 const PSAMv3 = () => {
-  const [text, setText] = useState("the cat sat on the mat. the dog sat on the rug. the bird sat on the branch. the frog sat on the log.");
+  const [text, setText] = useState("once upon a time in a small village, there lived a curious young girl named luna. luna loved to explore the forest near her home. one sunny morning, luna decided to venture deeper into the woods than ever before. she discovered a hidden clearing where magical butterflies danced in the golden sunlight. the butterflies led her to an ancient oak tree with a door carved into its trunk. luna opened the door and found a library filled with books that whispered secrets of the forest. she spent hours reading about the creatures and plants that called the forest home. as the sun began to set, the butterflies guided luna back to the village. from that day on, luna visited the magical library every week, learning more about the wonders of nature. with each visit, the library revealed new secrets. luna learned the language of birds and how to read the patterns in tree bark. the ancient books taught her about healing herbs and the stories written in the stars. one autumn evening, the butterflies brought luna a special gift, a silver key that unlocked a hidden chamber deep within the oak tree. inside the chamber, luna found a crystal that glowed with soft blue light. the crystal showed her visions of the forest's past and glimpses of its future. luna realized she had become the forest's keeper, entrusted with protecting its magic for generations to come.");
   const [trainingStep, setTrainingStep] = useState(0);
   const [isTraining, setIsTraining] = useState(false);
-  const [inferenceInput, setInferenceInput] = useState("the dog sat on the");
+  const [inferenceInput, setInferenceInput] = useState("luna loved to explore the");
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationHistory, setGenerationHistory] = useState<any[]>([]);
 
@@ -330,10 +330,10 @@ const PSAMv3 = () => {
     .reduce((sum, arr) => sum + arr.length, 0);
 
   const testScenarios = [
-    "the cat sat on the",
-    "the dog sat on the",
-    "the bird sat on the",
-    "the frog sat on the"
+    "luna loved to explore the",
+    "the butterflies led her to",
+    "luna opened the door and",
+    "the crystal showed her"
   ];
 
   return (
