@@ -90,7 +90,7 @@ int psam_predict(
         return 0;  /* No predictions possible */
     }
 
-    pthread_rwlock_rdlock(&model->lock);
+    psam_lock_rdlock(&model->lock);
 
     const uint32_t vocab_size = model->config.vocab_size;
     int result = 0;
@@ -192,7 +192,7 @@ cleanup_scores:
     free(scores);
 
 cleanup:
-    pthread_rwlock_unlock(&model->lock);
+    psam_lock_unlock_rd(&model->lock);
 
     return result;
 }

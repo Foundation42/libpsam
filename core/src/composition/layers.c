@@ -32,16 +32,16 @@ psam_error_t psam_add_layer(
     }
 
     /* Check for duplicate layer ID */
-    pthread_rwlock_rdlock(&base->lock);
+    psam_lock_rdlock(&base->lock);
     layer_node_t* node = base->layers;
     while (node) {
         if (strncmp(node->id, layer_id, 64) == 0) {
-            pthread_rwlock_unlock(&base->lock);
+            psam_lock_unlock_rd(&base->lock);
             return PSAM_ERR_INVALID_CONFIG;  /* Duplicate ID */
         }
         node = node->next;
     }
-    pthread_rwlock_unlock(&base->lock);
+    psam_lock_unlock_rd(&base->lock);
 
     /* Create new layer node */
     layer_node_t* new_layer = calloc(1, sizeof(layer_node_t));
@@ -55,10 +55,10 @@ psam_error_t psam_add_layer(
     new_layer->weight = weight;
 
     /* Add to front of list (exclusive lock) */
-    pthread_rwlock_wrlock(&base->lock);
+    psam_lock_wrlock(&base->lock);
     new_layer->next = base->layers;
     base->layers = new_layer;
-    pthread_rwlock_unlock(&base->lock);
+    psam_lock_unlock_wr(&base->lock);
 
     return PSAM_OK;
 }
@@ -68,7 +68,7 @@ psam_error_t psam_remove_layer(psam_model_t* base, const char* layer_id) {
         return PSAM_ERR_NULL_PARAM;
     }
 
-    pthread_rwlock_wrlock(&base->lock);
+    psam_lock_wrlock(&base->lock);
 
     layer_node_t* prev = NULL;
     layer_node_t* curr = base->layers;
@@ -82,7 +82,7 @@ psam_error_t psam_remove_layer(psam_model_t* base, const char* layer_id) {
                 base->layers = curr->next;
             }
 
-            pthread_rwlock_unlock(&base->lock);
+            psam_lock_unlock_wr(&base->lock);
             free(curr);
             return PSAM_OK;
         }
@@ -91,7 +91,7 @@ psam_error_t psam_remove_layer(psam_model_t* base, const char* layer_id) {
         curr = curr->next;
     }
 
-    pthread_rwlock_unlock(&base->lock);
+    psam_lock_unlock_wr(&base->lock);
 
     return PSAM_ERR_LAYER_NOT_FOUND;
 }
@@ -101,19 +101,19 @@ psam_error_t psam_update_layer_weight(psam_model_t* base, const char* layer_id, 
         return PSAM_ERR_NULL_PARAM;
     }
 
-    pthread_rwlock_wrlock(&base->lock);
+    psam_lock_wrlock(&base->lock);
 
     layer_node_t* node = base->layers;
     while (node) {
         if (strncmp(node->id, layer_id, 64) == 0) {
             node->weight = new_weight;
-            pthread_rwlock_unlock(&base->lock);
+            psam_lock_unlock_wr(&base->lock);
             return PSAM_OK;
         }
         node = node->next;
     }
 
-    pthread_rwlock_unlock(&base->lock);
+    psam_lock_unlock_wr(&base->lock);
 
     return PSAM_ERR_LAYER_NOT_FOUND;
 }
@@ -123,7 +123,7 @@ int psam_list_layers(psam_model_t* model, const char** out_ids, size_t max_layer
         return PSAM_ERR_NULL_PARAM;
     }
 
-    pthread_rwlock_rdlock(&model->lock);
+    psam_lock_rdlock(&model->lock);
 
     int count = 0;
     layer_node_t* node = model->layers;
@@ -134,7 +134,7 @@ int psam_list_layers(psam_model_t* model, const char** out_ids, size_t max_layer
         node = node->next;
     }
 
-    pthread_rwlock_unlock(&model->lock);
+    psam_lock_unlock_rd(&model->lock);
 
     return count;
 }

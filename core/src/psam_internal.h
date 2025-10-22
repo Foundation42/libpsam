@@ -9,8 +9,30 @@
 #define PSAM_INTERNAL_H
 
 #include "psam.h"
-#include <pthread.h>
 #include <stdbool.h>
+
+/* Platform-specific read-write lock */
+#ifdef _WIN32
+    #include <windows.h>
+    typedef SRWLOCK psam_lock_t;
+
+    #define psam_lock_init(lock) InitializeSRWLock(lock)
+    #define psam_lock_destroy(lock) /* SRWLock doesn't need cleanup */
+    #define psam_lock_rdlock(lock) AcquireSRWLockShared(lock)
+    #define psam_lock_wrlock(lock) AcquireSRWLockExclusive(lock)
+    #define psam_lock_unlock_rd(lock) ReleaseSRWLockShared(lock)
+    #define psam_lock_unlock_wr(lock) ReleaseSRWLockExclusive(lock)
+#else
+    #include <pthread.h>
+    typedef pthread_rwlock_t psam_lock_t;
+
+    #define psam_lock_init(lock) pthread_rwlock_init(lock, NULL)
+    #define psam_lock_destroy(lock) pthread_rwlock_destroy(lock)
+    #define psam_lock_rdlock(lock) pthread_rwlock_rdlock(lock)
+    #define psam_lock_wrlock(lock) pthread_rwlock_wrlock(lock)
+    #define psam_lock_unlock_rd(lock) pthread_rwlock_unlock(lock)
+    #define psam_lock_unlock_wr(lock) pthread_rwlock_unlock(lock)
+#endif
 
 /* ============================ Internal Data Structures ============================ */
 
@@ -70,7 +92,7 @@ struct psam_model {
     layer_node_t* layers;
 
     /* Thread safety */
-    pthread_rwlock_t lock;
+    psam_lock_t lock;
 };
 
 /* ============================ Internal Function Declarations ============================ */

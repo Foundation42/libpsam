@@ -60,7 +60,7 @@ psam_model_t* psam_create_with_config(const psam_config_t* config) {
     }
 
     /* Initialize thread safety */
-    pthread_rwlock_init(&model->lock, NULL);
+    psam_lock_init(&model->lock);
 
     model->is_finalized = false;
     model->total_tokens = 0;
@@ -76,7 +76,7 @@ void psam_destroy(psam_model_t* model) {
         return;
     }
 
-    pthread_rwlock_destroy(&model->lock);
+    psam_lock_destroy(&model->lock);
 
     /* Free CSR storage */
     if (model->csr) {
@@ -118,7 +118,7 @@ psam_error_t psam_get_stats(const psam_model_t* model, psam_stats_t* out_stats) 
         return PSAM_ERR_NULL_PARAM;
     }
 
-    pthread_rwlock_rdlock((pthread_rwlock_t*)&model->lock);
+    psam_lock_rdlock((psam_lock_t*)&model->lock);
 
     memset(out_stats, 0, sizeof(psam_stats_t));
     out_stats->vocab_size = model->config.vocab_size;
@@ -138,7 +138,7 @@ psam_error_t psam_get_stats(const psam_model_t* model, psam_stats_t* out_stats) 
         out_stats->memory_bytes += model->csr->row_count * sizeof(float); /* row_scales */
     }
 
-    pthread_rwlock_unlock((pthread_rwlock_t*)&model->lock);
+    psam_lock_unlock_rd((psam_lock_t*)&model->lock);
 
     return PSAM_OK;
 }
