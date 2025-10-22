@@ -97,7 +97,7 @@ int main() {
         printf("   Predictions:\n");
         for (int i = 0; i < num_preds; i++) {
             printf("   %2d. Token %u (score: %.3f)\n",
-                   i + 1, predictions[i].token_id, predictions[i].score);
+                   i + 1, predictions[i].token, predictions[i].score);
         }
         printf("\n");
     }
@@ -133,7 +133,7 @@ int main() {
 
     if (num_preds > 0) {
         printf("✓ Loaded model works! First prediction: Token %u\n\n",
-               predictions[0].token_id);
+               predictions[0].token);
     }
 
     // Cleanup

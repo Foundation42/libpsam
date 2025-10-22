@@ -58,7 +58,7 @@ int main() {
 
     for (int i = 0; i < num_preds; i++) {
         printf("   %d. Token %u (%.3f)\n", i + 1,
-               predictions[i].token_id, predictions[i].score);
+               predictions[i].token, predictions[i].score);
     }
     printf("\n");
 
@@ -75,7 +75,7 @@ int main() {
 
     for (int i = 0; i < num_preds; i++) {
         printf("   %d. Token %u (%.3f)\n", i + 1,
-               predictions[i].token_id, predictions[i].score);
+               predictions[i].token, predictions[i].score);
     }
     printf("\n");
 
@@ -92,7 +92,7 @@ int main() {
 
     for (int i = 0; i < num_preds; i++) {
         printf("   %d. Token %u (%.3f)\n", i + 1,
-               predictions[i].token_id, predictions[i].score);
+               predictions[i].token, predictions[i].score);
     }
     printf("\n");
 
@@ -115,7 +115,7 @@ int main() {
 
     for (int i = 0; i < num_preds; i++) {
         printf("   %d. Token %u (%.3f)\n", i + 1,
-               predictions[i].token_id, predictions[i].score);
+               predictions[i].token, predictions[i].score);
     }
     printf("\n");
 
