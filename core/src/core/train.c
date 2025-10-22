@@ -162,15 +162,24 @@ static float compute_ppmi(
     uint32_t source,
     uint32_t target
 ) {
-    float p_source = (float)(model->unigram_counts[source] + 1) / fmaxf((float)model->total_tokens, 1.0f);
-    float p_target = (float)(model->unigram_counts[target] + 1) / fmaxf((float)model->total_tokens, 1.0f);
-    float p_pair = (float)pair_count / fmaxf((float)total_pairs, 1.0f);
+    // Match JavaScript: no +1 smoothing, just use actual counts
+    uint32_t source_count = model->unigram_counts[source];
+    uint32_t target_count = model->unigram_counts[target];
+
+    // Fallback to 1 if zero (like JavaScript's || 1)
+    if (source_count == 0) source_count = 1;
+    if (target_count == 0) target_count = 1;
+
+    float total = fmaxf((float)model->total_tokens, 1.0f);
+    float p_source = (float)source_count / total;
+    float p_target = (float)target_count / total;
+    float p_pair = (float)pair_count / total;
 
     if (p_pair <= 0.0f || p_source <= 0.0f || p_target <= 0.0f) {
         return 0.0f;
     }
 
-    float ratio = p_pair / (p_source * p_target + EPSILON);
+    float ratio = p_pair / (p_source * p_target);
     return fmaxf(0.0f, logf(ratio));
 }
 
@@ -267,7 +276,7 @@ psam_error_t psam_train_batch(psam_model_t* model, const uint32_t* tokens, size_
             }
 
             float ppmi = model->config.enable_ppmi
-                ? compute_ppmi(edge->count, row->total_observations, model, source, target)
+                ? compute_ppmi(edge->count, model->total_tokens, model, source, target)
                 : 1.0f;
 
             float idf = model->config.enable_idf

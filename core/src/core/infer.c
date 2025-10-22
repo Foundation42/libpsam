@@ -145,8 +145,8 @@ int psam_predict(
                     continue;  /* Safety check */
                 }
 
-                /* Weight is stored as int16, convert to float and dequantize */
-                float weight = (float)model->csr->weights[edge] / 32767.0f;
+                /* Weight is quantized int16, contribution includes row_scale for dequantization */
+                float weight = (float)model->csr->weights[edge];
 
                 scores[target] += contribution * weight;
             }
