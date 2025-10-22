@@ -85,6 +85,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
@@ -99,13 +104,73 @@ jobs:
           chmod +x build.sh
           ./build.sh
 
+      - name: Build TypeScript bindings
+        run: |
+          cd bindings/javascript
+          npm install
+          npm run build
+
       - name: Package WASM
         run: |
-          mkdir -p dist
-          cp bindings/wasm/build/psam.wasm dist/
-          cp bindings/wasm/build/psam.js dist/
+          mkdir -p dist/libpsam-wasm
+
+          # Copy WASM files
+          cp bindings/wasm/build/psam.wasm dist/libpsam-wasm/
+          cp bindings/wasm/build/psam.js dist/libpsam-wasm/
+
+          # Copy JavaScript bindings
+          cp bindings/javascript/dist/wasm.js dist/libpsam-wasm/psam-bindings.js
+          cp bindings/javascript/dist/wasm.d.ts dist/libpsam-wasm/psam-bindings.d.ts
+          cp bindings/javascript/dist/types.d.ts dist/libpsam-wasm/
+
+          # Create README
+          cat > dist/libpsam-wasm/README.md << 'EOF'
+          # libpsam WASM
+
+          WebAssembly build of libpsam for browser usage.
+
+          ## Files
+
+          - `psam.wasm` - WebAssembly module
+          - `psam.js` - Emscripten glue code
+          - `psam-bindings.js` - TypeScript bindings (ESM)
+          - `psam-bindings.d.ts` - TypeScript type definitions
+          - `types.d.ts` - Shared type definitions
+
+          ## Usage
+
+          ### In HTML
+
+          ```html
+          <script src="psam.js"></script>
+          <script type="module">
+            import { PSAMWASM } from './psam-bindings.js';
+
+            const psam = await PSAMWASM.create(1000, 8, 32);
+            psam.trainBatch([1, 2, 3, 4, 5]);
+            psam.finalizeTraining();
+
+            const result = psam.predict([1, 2, 3]);
+            console.log('Predictions:', result);
+          </script>
+          ```
+
+          ### With a bundler
+
+          ```typescript
+          import { PSAMWASM } from '@foundation42/libpsam/wasm';
+
+          const psam = await PSAMWASM.create(1000, 8, 32);
+          ```
+
+          ## Documentation
+
+          See https://github.com/Foundation42/libpsam for full documentation.
+          EOF
+
+          # Create archive
           cd dist
-          tar -czf libpsam-wasm.tar.gz psam.wasm psam.js
+          tar -czf libpsam-wasm.tar.gz libpsam-wasm/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
