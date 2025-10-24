@@ -228,3 +228,123 @@ psam_error_t psam_predict_batch(
 
     return PSAM_OK;
 }
+
+/**
+ * Comparison function for sorting explain terms by contribution (descending)
+ */
+static int compare_explain_terms(const void* a, const void* b) {
+    const psam_explain_term_t* ta = (const psam_explain_term_t*)a;
+    const psam_explain_term_t* tb = (const psam_explain_term_t*)b;
+    if (ta->contribution > tb->contribution) return -1;
+    if (ta->contribution < tb->contribution) return 1;
+    return 0;
+}
+
+int psam_explain(
+    psam_model_t* model,
+    const uint32_t* context,
+    size_t context_len,
+    uint32_t candidate_token,
+    psam_explain_term_t* out_terms,
+    size_t max_terms
+) {
+    if (!model || !context || !out_terms) {
+        return PSAM_ERR_NULL_PARAM;
+    }
+
+    if (!model->is_finalized) {
+        return PSAM_ERR_NOT_TRAINED;
+    }
+
+    if (model->config.vocab_size == 0 || context_len == 0) {
+        return 0;  /* No explanation possible */
+    }
+
+    if (candidate_token >= model->config.vocab_size) {
+        return PSAM_ERR_INVALID_TOKEN;
+    }
+
+    psam_lock_rdlock(&model->lock);
+
+    const uint32_t vocab_size = model->config.vocab_size;
+    int result = 0;
+
+    /* Allocate temporary buffer for all contributing terms */
+    size_t max_possible_terms = context_len * model->config.top_k;
+    psam_explain_term_t* all_terms = malloc(max_possible_terms * sizeof(psam_explain_term_t));
+    if (!all_terms) {
+        result = PSAM_ERR_OUT_OF_MEMORY;
+        goto cleanup;
+    }
+
+    size_t term_count = 0;
+
+    /* Process each context token to find contributions to candidate */
+    if (model->csr && model->csr->row_count > 0) {
+        for (size_t i = 0; i < context_len; i++) {
+            uint32_t token = context[i];
+            if (token >= vocab_size) {
+                continue;  /* Skip out-of-vocabulary tokens */
+            }
+
+            /* Calculate offset (distance from end of context) */
+            uint32_t offset = (uint32_t)(context_len - i);
+
+            /* Find row for (token, offset) pair */
+            int row_idx = find_row_index(model, token, offset);
+            if (row_idx < 0) {
+                continue;  /* Row not found */
+            }
+
+            /* Compute factors */
+            float idf = model->config.enable_idf ? compute_idf(model, token) : 1.0f;
+            float distance_decay = expf(-model->config.alpha * (float)offset);
+
+            /* Get row bounds from CSR */
+            uint32_t row_start = model->csr->row_offsets[row_idx];
+            uint32_t row_end = model->csr->row_offsets[row_idx + 1];
+            float row_scale = model->csr->row_scales[row_idx];
+
+            /* Search for candidate_token in this row */
+            for (uint32_t edge = row_start; edge < row_end; edge++) {
+                uint32_t target = model->csr->targets[edge];
+
+                if (target == candidate_token) {
+                    /* Found a contribution! */
+                    float weight = (float)model->csr->weights[edge] * row_scale;
+                    float contribution = idf * distance_decay * weight;
+
+                    /* Store term */
+                    if (term_count < max_possible_terms) {
+                        all_terms[term_count].source_token = token;
+                        all_terms[term_count].source_position = (int32_t)i;
+                        all_terms[term_count].relative_offset = (int32_t)offset;
+                        all_terms[term_count].base_weight = weight;
+                        all_terms[term_count].idf_factor = idf;
+                        all_terms[term_count].distance_decay = distance_decay;
+                        all_terms[term_count].contribution = contribution;
+                        term_count++;
+                    }
+
+                    break;  /* Found the target, move to next context token */
+                }
+            }
+        }
+    }
+
+    /* Sort terms by contribution (descending) */
+    qsort(all_terms, term_count, sizeof(psam_explain_term_t), compare_explain_terms);
+
+    /* Copy top terms to output */
+    size_t output_count = term_count < max_terms ? term_count : max_terms;
+    memcpy(out_terms, all_terms, output_count * sizeof(psam_explain_term_t));
+
+    result = (int)output_count;
+
+    free(all_terms);
+
+cleanup:
+    psam_lock_unlock_rd(&model->lock);
+
+    return result;
+}

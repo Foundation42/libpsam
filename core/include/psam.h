@@ -59,6 +59,20 @@ typedef struct {
 } psam_prediction_t;
 
 /**
+ * Explanation term showing contributing factors for a prediction.
+ * Provides full traceability of why a token was predicted.
+ */
+typedef struct {
+    uint32_t source_token;    /* Context token that contributed */
+    int32_t source_position;  /* Position of source token in context */
+    int32_t relative_offset;  /* Relative position (+/- offset) */
+    float base_weight;        /* Base association weight (PPMI-adjusted) */
+    float idf_factor;         /* IDF weighting factor */
+    float distance_decay;     /* Distance decay factor (exp(-α·|offset|)) */
+    float contribution;       /* Final contribution (weight × idf × decay) */
+} psam_explain_term_t;
+
+/**
  * Training statistics for monitoring.
  */
 typedef struct {
@@ -252,6 +266,44 @@ psam_error_t psam_predict_batch(
     psam_prediction_t** out_preds,
     size_t max_preds_per_context,
     int* out_counts
+);
+
+/**
+ * Explain why a specific token was predicted for the given context.
+ * Returns the top contributing association terms with full traceability.
+ * This exposes PSAM's interpretability superpower: every prediction can be
+ * traced back to specific (source_token, offset, weight) associations.
+ *
+ * @param model Trained model (must be finalized)
+ * @param context Array of context token IDs
+ * @param context_len Number of tokens in context
+ * @param candidate_token Token ID to explain
+ * @param out_terms Output buffer for explanation terms (caller-allocated)
+ * @param max_terms Size of output buffer
+ * @return Number of terms written (0 to max_terms), or negative error code
+ *
+ * Example:
+ *   uint32_t context[] = {10, 20, 30};
+ *   psam_explain_term_t terms[32];
+ *   int n = psam_explain(model, context, 3, 42, terms, 32);
+ *   if (n > 0) {
+ *     for (int i = 0; i < n; i++) {
+ *       printf("  Token %u at pos %d (offset %+d): "
+ *              "weight=%.3f × idf=%.3f × decay=%.3f = %.4f\n",
+ *              terms[i].source_token, terms[i].source_position,
+ *              terms[i].relative_offset, terms[i].base_weight,
+ *              terms[i].idf_factor, terms[i].distance_decay,
+ *              terms[i].contribution);
+ *     }
+ *   }
+ */
+int psam_explain(
+    psam_model_t* model,
+    const uint32_t* context,
+    size_t context_len,
+    uint32_t candidate_token,
+    psam_explain_term_t* out_terms,
+    size_t max_terms
 );
 
 /* ============================ Layer Composition ============================ */
