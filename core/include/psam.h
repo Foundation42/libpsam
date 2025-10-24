@@ -1,5 +1,5 @@
 /**
- * libpsam - Probabilistic Sequence Association Memory
+ * libpsam - Position-Specific Association Memory
  *
  * High-performance C library for sequence prediction using sparse associative memory.
  * Designed for fast FFI integration with Node.js and other language runtimes.

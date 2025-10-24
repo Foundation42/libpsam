@@ -2,7 +2,7 @@
 
 **Fast, lightweight sequence prediction using learned token associations.**
 
-Python bindings for [libpsam](https://github.com/Foundation42/libpsam) - a high-performance PSAM (Probabilistic Sequence Association Memory) library.
+Python bindings for [libpsam](https://github.com/Foundation42/libpsam) - a high-performance PSAM (Position-Specific Association Memory) library.
 
 ## Installation
 

@@ -2,7 +2,7 @@
 
 **Fast, lightweight sequence prediction using learned token associations.**
 
-A high-performance C library for PSAM (Probabilistic Sequence Association Memory) with bindings for JavaScript/TypeScript, Python, and WebAssembly. Perfect for next-token prediction, sequence generation, and domain adaptation.
+A high-performance C library for PSAM (Position-Specific Association Memory) with bindings for JavaScript/TypeScript, Python, and WebAssembly. Perfect for next-token prediction, sequence generation, and domain adaptation.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -260,10 +260,10 @@ Contributions welcome! This library aims to stay simple, fast, and hackable.
 **Christian Beaumont** - Creator and Lead Developer
 
 Built in collaboration with AI assistants:
-- Claude Code (Anthropic)
 - Claude Chat (Anthropic)
-- GPT-4 (OpenAI)
-- OpenAI Codex
+- GPT-5 (OpenAI)
+- Codex (OpenAI)
+- Claude Code (Anthropic)
 
 ## License
 

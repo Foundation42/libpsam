@@ -212,7 +212,7 @@ def _check_error(code: int, operation: str):
 
 class PSAM:
     """
-    PSAM model - Probabilistic Sequence Association Memory
+    PSAM model - Position-Specific Association Memory
 
     Example:
         >>> psam = PSAM(vocab_size=50000, window=8, top_k=32)

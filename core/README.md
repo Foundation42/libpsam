@@ -2,7 +2,7 @@
 
 **Fast, lightweight sequence prediction using learned token associations.**
 
-This is the core C implementation of PSAM (Probabilistic Sequence Association Memory), designed to be embedded in applications across multiple languages.
+This is the core C implementation of PSAM (Position-Specific Association Memory), designed to be embedded in applications across multiple languages.
 
 ## Features
 
