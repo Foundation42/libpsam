@@ -6,6 +6,15 @@ interface PSAMInstance {
   trainBatch(tokens: number[]): void;
   finalizeTraining(): void;
   predict(context: number[], maxPredictions?: number): { ids: number[]; scores: Float32Array };
+  explain?(context: number[], candidateToken: number, maxTerms?: number): {
+    sourceToken: number;
+    sourcePosition: number;
+    relativeOffset: number;
+    baseWeight: number;
+    idfFactor: number;
+    distanceDecay: number;
+    contribution: number;
+  }[];
   sample(context: number[], temperature?: number): number;
   stats(): {
     vocabSize: number;
@@ -37,6 +46,19 @@ const PSAMWasmDemo = () => {
   // Inference
   const [inferenceInput, setInferenceInput] = useState("luna loved to explore the");
   const [predictions, setPredictions] = useState<{ token: number; word: string; score: number; probability: number }[]>([]);
+  const [explanation, setExplanation] = useState<{
+    token: string;
+    terms: {
+      sourceToken: number;
+      sourceWord: string;
+      sourcePosition: number;
+      relativeOffset: number;
+      baseWeight: number;
+      idfFactor: number;
+      distanceDecay: number;
+      contribution: number;
+    }[];
+  } | null>(null);
 
   // Auto-generation
   const [isGenerating, setIsGenerating] = useState(false);
@@ -101,9 +123,36 @@ const PSAMWasmDemo = () => {
       }));
 
       setPredictions(preds);
+
+      // Generate explanation for top prediction
+      if (preds.length > 0 && psam.explain) {
+        try {
+          const topToken = preds[0].token;
+          const explainResult = psam.explain(contextTokens.slice(-contextWindow), topToken, 10);
+
+          setExplanation({
+            token: preds[0].word,
+            terms: explainResult.map(term => ({
+              sourceToken: term.sourceToken,
+              sourceWord: vocab[term.sourceToken] || `<${term.sourceToken}>`,
+              sourcePosition: term.sourcePosition,
+              relativeOffset: term.relativeOffset,
+              baseWeight: term.baseWeight,
+              idfFactor: term.idfFactor,
+              distanceDecay: term.distanceDecay,
+              contribution: term.contribution,
+            }))
+          });
+        } catch (err) {
+          setExplanation(null);
+        }
+      } else {
+        setExplanation(null);
+      }
     } catch (err) {
       // Silent fail for live updates
       setPredictions([]);
+      setExplanation(null);
     }
   }, [inferenceInput, psam, trained, vocab, contextWindow, topK, temperature]);
 
@@ -214,6 +263,39 @@ const PSAMWasmDemo = () => {
               Module._free(predsPtr);
 
               return { ids, scores: new Float32Array(scores) };
+            },
+
+            explain: (context: number[], candidateToken: number, maxTerms = 32) => {
+              const contextArray = new Uint32Array(context);
+              const contextPtr = Module._malloc(contextArray.length * 4);
+              Module.HEAPU32.set(contextArray, contextPtr / 4);
+
+              const termsPtr = Module._malloc(maxTerms * 28); // 28 bytes per term
+
+              const psam_explain = Module.cwrap('psam_explain', 'number',
+                ['number', 'number', 'number', 'number', 'number', 'number']);
+              const numTerms = psam_explain(handle, contextPtr, contextArray.length, candidateToken, termsPtr, maxTerms);
+
+              const terms: any[] = [];
+              if (numTerms > 0) {
+                for (let i = 0; i < numTerms; i++) {
+                  const baseOffset = termsPtr / 4 + i * 7; // 7 fields per term
+                  terms.push({
+                    sourceToken: Module.HEAPU32[baseOffset],
+                    sourcePosition: Module.HEAP32[baseOffset + 1],
+                    relativeOffset: Module.HEAP32[baseOffset + 2],
+                    baseWeight: Module.HEAPF32[baseOffset + 3],
+                    idfFactor: Module.HEAPF32[baseOffset + 4],
+                    distanceDecay: Module.HEAPF32[baseOffset + 5],
+                    contribution: Module.HEAPF32[baseOffset + 6],
+                  });
+                }
+              }
+
+              Module._free(contextPtr);
+              Module._free(termsPtr);
+
+              return terms;
             },
 
             sample: (context: number[], temperature = 1.0) => {
@@ -735,6 +817,41 @@ const PSAMWasmDemo = () => {
                         </div>
                       </div>
                     ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Explanation */}
+              {explanation && (
+                <div className="bg-amber-50 rounded-lg p-4 mb-4 border border-amber-200">
+                  <h4 className="font-medium text-gray-800 mb-3 flex items-center gap-2">
+                    <span className="text-amber-600">🔍</span>
+                    Why predict "{explanation.token}"?
+                  </h4>
+                  <div className="text-xs text-gray-600 mb-3">
+                    Top contributing associations (source → target):
+                  </div>
+                  <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                    {explanation.terms.slice(0, 8).map((term, i) => (
+                      <div key={i} className="font-mono text-xs bg-white p-2 rounded border border-amber-200">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-indigo-600 font-semibold">"{term.sourceWord}"</span>
+                          <span className="text-gray-400">@pos {term.sourcePosition}</span>
+                          <span className="text-gray-400">(offset {term.relativeOffset > 0 ? '+' : ''}{term.relativeOffset})</span>
+                          <span className="text-green-600 ml-auto font-bold">
+                            {term.contribution.toFixed(4)}
+                          </span>
+                        </div>
+                        <div className="text-gray-500 text-[10px]">
+                          weight:{term.baseWeight.toFixed(3)} ×
+                          idf:{term.idfFactor.toFixed(3)} ×
+                          decay:{term.distanceDecay.toFixed(3)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-2 text-xs text-gray-500 italic">
+                    Total score is sum of all contributions from context tokens.
                   </div>
                 </div>
               )}
