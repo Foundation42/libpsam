@@ -549,10 +549,10 @@ Perfect for applications where **interpretability**, **efficiency**, and **adapt
 **Christian Beaumont** - Creator and Lead Developer
 
 Developed in collaboration with AI assistants:
-- Claude Code (Anthropic)
 - Claude Chat (Anthropic)
-- GPT-4 (OpenAI)
-- OpenAI Codex
+- GPT-5 (OpenAI)
+- Codex (OpenAI)
+- Claude Code (Anthropic)
 
 ---
 

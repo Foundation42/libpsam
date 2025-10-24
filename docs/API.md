@@ -642,15 +642,51 @@ base.add_layer("legal", legal_model, weight=2.0)
 - Multiple layers can be active simultaneously
 - Layer weights are multiplicative
 
-### File Format
+### File Formats
 
-Binary format (`.psam` files):
+#### `.psam` - Single Model Format
+
+Binary format for individual models:
 - Magic number + version
-- Configuration
+- Configuration (vocab size, window, hyperparameters)
 - CSR sparse matrix
 - Bias, IDF, unigram counts
 
 Compatible across all language bindings and platforms.
+
+#### `.psamc` - Composite Model Format
+
+Extensible format for model composition with integrity verification (C API only currently):
+
+```c
+#include <psam_composite.h>
+
+// Create composite with hyperparameters and manifest
+psamc_hyperparams_t config = PSAMC_PRESET_BALANCED_CONFIG;
+config.alpha = 0.12;  // Custom tweak
+
+psamc_manifest_t manifest = {
+    .created_timestamp = time(NULL),
+    .created_by = "my-trainer v1.0.0",
+    // ... external model references with SHA-256 hashes
+};
+
+psamc_sha256_file("training_data.txt", &manifest.source_hash);
+psamc_save("model.psamc", base_model, &config, &manifest);
+
+// Load with integrity verification
+void* model = psamc_load("model.psamc", true);  // verify=true
+```
+
+**Features:**
+- SHA-256 integrity checking for external model references
+- Hyperparameter storage (α, K, IDF, PPMI) for exact replay
+- Provenance tracking (creator, timestamp, source hash)
+- Preset configurations (FAST, BALANCED, ACCURATE, TINY)
+- External references with semver version checking
+- Layer composition for domain adaptation
+
+See **[.psamc Format Specification](./PSAMC_FORMAT.md)** for complete details.
 
 ### Thread Safety
 

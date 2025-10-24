@@ -123,11 +123,28 @@ export LIBPSAM_PATH=/path/to/libpsam/build/libpsam.so
 
 - **[How PSAM Works](./docs/PSAM.md)** - Theory, PPMI, IDF, architecture
 - **[API Reference](./docs/API.md)** - Complete API documentation
+- **[.psamc Format](./docs/PSAMC_FORMAT.md)** - Composite model format with integrity verification
 - **[Build Guide](./docs/BUILDING.md)** - Build instructions
 - **[Core C Library](./core/README.md)** - C API reference
 - **[JavaScript Bindings](./bindings/javascript/README.md)** - Node.js, Bun, Browser (WASM)
 - **[Python Bindings](./bindings/python/README.md)** - Python API
 - **[Examples](./examples/)** - Code examples for all languages
+
+## Model Formats
+
+### `.psam` - Single Model
+Standard format for individual models. Compact binary format with CSR sparse matrix storage.
+
+### `.psamc` - Composite Model
+Extensible format for model composition with:
+- ✅ **SHA-256 integrity checking** - Prevents "works on my machine" bugs
+- ✅ **External references** - Reference models by URL with version checking
+- ✅ **Hyperparameter storage** - α, K, IDF, PPMI stored for exact replay
+- ✅ **Provenance tracking** - Creator, timestamp, source hash for reproducibility
+- ✅ **Preset configurations** - FAST, BALANCED, ACCURATE, TINY presets
+- ✅ **Layer composition** - Combine base + overlay models for domain adaptation
+
+See **[.psamc Format Specification](./docs/PSAMC_FORMAT.md)** for full details.
 
 ## Examples
 
