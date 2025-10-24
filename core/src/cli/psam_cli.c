@@ -20,6 +20,8 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <math.h>
+#include <float.h>
 
 #define CLI_VERSION "0.1.0"
 
@@ -69,6 +71,7 @@ static void print_usage(void) {
     printf("  build      Train a PSAM model from text\n");
     printf("  compose    Create a .psamc composite manifest\n");
     printf("  predict    Predict next tokens given context\n");
+    printf("  generate   Sample a continuation using top-k/top-p\n");
     printf("  explain    Explain why a candidate token was chosen\n");
     printf("  analyze    Report model statistics\n");
     printf("  inspect    Display model/composite metadata\n");
@@ -126,6 +129,109 @@ static void u32_list_free(u32_list_t* list) {
     free(list->data);
     list->data = NULL;
     list->size = list->capacity = 0;
+}
+
+static double rng_uniform(uint64_t* state) {
+    *state = (*state * 6364136223846793005ULL + 1442695040888963407ULL);
+    return ((*state >> 11) & 0x1FFFFFFFFFFFFFULL) * (1.0 / 9007199254740992.0);
+}
+
+static int sample_prediction(const psam_prediction_t* preds,
+                             int num_preds,
+                             uint32_t top_k,
+                             float temperature,
+                             float top_p,
+                             uint64_t* rng_state,
+                             uint32_t* out_token) {
+    if (!preds || num_preds <= 0 || !out_token) {
+        return -1;
+    }
+
+    int candidate_count = num_preds;
+    if (top_k > 0 && (int)top_k < candidate_count) {
+        candidate_count = (int)top_k;
+    }
+    if (candidate_count <= 0) {
+        candidate_count = num_preds;
+    }
+
+    double* logits = malloc((size_t)candidate_count * sizeof(double));
+    double* probs = malloc((size_t)candidate_count * sizeof(double));
+    if (!logits || !probs) {
+        free(logits);
+        free(probs);
+        return -1;
+    }
+
+    double inv_temp = 1.0 / (double)temperature;
+    double max_logit = -DBL_MAX;
+    for (int i = 0; i < candidate_count; ++i) {
+        double logit = (double)preds[i].score * inv_temp;
+        logits[i] = logit;
+        if (logit > max_logit) {
+            max_logit = logit;
+        }
+    }
+
+    double sum = 0.0;
+    for (int i = 0; i < candidate_count; ++i) {
+        double val = exp(logits[i] - max_logit);
+        probs[i] = val;
+        sum += val;
+    }
+
+    if (sum <= 0.0) {
+        free(logits);
+        free(probs);
+        *out_token = preds[0].token;
+        return 0;
+    }
+
+    for (int i = 0; i < candidate_count; ++i) {
+        probs[i] /= sum;
+    }
+
+    int trimmed_count = candidate_count;
+    if (top_p > 0.0f && top_p < 0.999999f) {
+        double cumulative = 0.0;
+        trimmed_count = 0;
+        for (int i = 0; i < candidate_count; ++i) {
+            cumulative += probs[i];
+            trimmed_count++;
+            if (cumulative >= (double)top_p) {
+                break;
+            }
+        }
+        if (trimmed_count < 1) {
+            trimmed_count = 1;
+        }
+        double renorm = 0.0;
+        for (int i = 0; i < trimmed_count; ++i) {
+            renorm += probs[i];
+        }
+        if (renorm > 0.0) {
+            for (int i = 0; i < trimmed_count; ++i) {
+                probs[i] /= renorm;
+            }
+        }
+    }
+
+    double r = rng_uniform(rng_state);
+    double cumulative = 0.0;
+    for (int i = 0; i < trimmed_count; ++i) {
+        cumulative += probs[i];
+        if (r <= cumulative || i == trimmed_count - 1) {
+            *out_token = preds[i].token;
+            free(logits);
+            free(probs);
+            return 0;
+        }
+    }
+
+    *out_token = preds[trimmed_count - 1].token;
+    free(logits);
+    free(probs);
+    return 0;
 }
 
 /* ==== utility helpers ==== */
@@ -652,17 +758,259 @@ typedef struct {
     const char* ctx_ids;
     const char* context_text;
     uint32_t top_k;
+    float temperature;
+    float top_p;
     bool pretty;
 } predict_options_t;
 
 static void predict_usage(void) {
-    printf("Usage: psam predict --model model.psam (--ctx-ids 1,2,3 | --context \"text\" --vocab vocab.tsv) [--top_k 5] [--pretty]\n");
+    printf("Usage: psam predict --model model.psam (--ctx-ids 1,2,3 | --context \"text\" --vocab vocab.tsv) [--top_k 5] [--temperature 1.0] [--top_p 1.0] [--pretty]\n");
+}
+
+typedef struct {
+    const char* model_path;
+    const char* vocab_path;
+    const char* ctx_ids;
+    const char* context_text;
+    uint32_t count;
+    uint32_t top_k;
+    float top_p;
+    float temperature;
+    uint32_t seed;
+    bool seed_provided;
+    bool pretty;
+    bool quiet;
+} generate_options_t;
+
+static void generate_usage(void) {
+    printf("Usage: psam generate --model model.psam (--ctx-ids 1,2,3 | --context \"text\" --vocab vocab.tsv) [--count 32] [--top_k 16] [--top_p 1.0] [--temperature 1.0] [--seed N] [--pretty] [--quiet]\n");
+}
+
+static int generate_command(int argc, char** argv) {
+    generate_options_t opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.count = 32;
+    opts.top_k = 16;
+    opts.top_p = 1.0f;
+    opts.temperature = 1.0f;
+
+    for (int i = 2; i < argc; ++i) {
+        const char* arg = argv[i];
+        if (strcmp(arg, "--model") == 0) {
+            if (++i >= argc) { generate_usage(); return EXIT_BAD_ARGS; }
+            opts.model_path = argv[i];
+        } else if (strcmp(arg, "--ctx-ids") == 0) {
+            if (++i >= argc) { generate_usage(); return EXIT_BAD_ARGS; }
+            opts.ctx_ids = argv[i];
+        } else if (strcmp(arg, "--context") == 0) {
+            if (++i >= argc) { generate_usage(); return EXIT_BAD_ARGS; }
+            opts.context_text = argv[i];
+        } else if (strcmp(arg, "--vocab") == 0) {
+            if (++i >= argc) { generate_usage(); return EXIT_BAD_ARGS; }
+            opts.vocab_path = argv[i];
+        } else if (strcmp(arg, "--count") == 0) {
+            if (++i >= argc || parse_uint32(argv[i], &opts.count) != 0 || opts.count == 0) {
+                generate_usage();
+                return EXIT_BAD_ARGS;
+            }
+        } else if (strcmp(arg, "--top_k") == 0) {
+            if (++i >= argc || parse_uint32(argv[i], &opts.top_k) != 0) {
+                generate_usage();
+                return EXIT_BAD_ARGS;
+            }
+        } else if (strcmp(arg, "--top_p") == 0) {
+            if (++i >= argc || parse_float(argv[i], &opts.top_p) != 0 || opts.top_p <= 0.0f || opts.top_p > 1.0f) {
+                generate_usage();
+                return EXIT_BAD_ARGS;
+            }
+        } else if (strcmp(arg, "--temperature") == 0) {
+            if (++i >= argc || parse_float(argv[i], &opts.temperature) != 0 || opts.temperature <= 0.0f) {
+                generate_usage();
+                return EXIT_BAD_ARGS;
+            }
+        } else if (strcmp(arg, "--seed") == 0) {
+            if (++i >= argc || parse_uint32(argv[i], &opts.seed) != 0) {
+                generate_usage();
+                return EXIT_BAD_ARGS;
+            }
+            opts.seed_provided = true;
+        } else if (strcmp(arg, "--pretty") == 0) {
+            opts.pretty = true;
+        } else if (strcmp(arg, "--quiet") == 0) {
+            opts.quiet = true;
+        } else if (strcmp(arg, "--help") == 0) {
+            generate_usage();
+            return EXIT_OK;
+        } else if (strcmp(arg, "--json") == 0) {
+            /* default */
+        } else {
+            print_error("unknown option '%s'", arg);
+            generate_usage();
+            return EXIT_BAD_ARGS;
+        }
+    }
+
+    if (!opts.model_path) {
+        print_error("generate requires --model");
+        generate_usage();
+        return EXIT_BAD_ARGS;
+    }
+
+    if (!opts.ctx_ids && !opts.context_text) {
+        print_error("generate requires either --ctx-ids or --context");
+        generate_usage();
+        return EXIT_BAD_ARGS;
+    }
+
+    vocab_t vocab = {0};
+    if (opts.context_text && !opts.vocab_path) {
+        print_error("--context requires --vocab");
+        return EXIT_BAD_ARGS;
+    }
+    if (opts.vocab_path) {
+        int rc = vocab_load(opts.vocab_path, &vocab);
+        if (rc != EXIT_OK) {
+            vocab_free(&vocab);
+            return rc;
+        }
+    }
+
+    u32_list_t context = {0};
+    if (opts.ctx_ids) {
+        int rc = parse_ctx_ids(opts.ctx_ids, &context);
+        if (rc != EXIT_OK) {
+            vocab_free(&vocab);
+            return rc;
+        }
+    } else {
+        int rc = tokenize_with_vocab(&vocab, opts.context_text, &context, true);
+        if (rc != EXIT_OK) {
+            vocab_free(&vocab);
+            return rc;
+        }
+    }
+
+    psam_model_t* model = psam_load(opts.model_path);
+    if (!model) {
+        print_error("failed to load model '%s'", opts.model_path);
+        vocab_free(&vocab);
+        u32_list_free(&context);
+        return EXIT_FILE_MISSING;
+    }
+
+    uint32_t predict_cap = opts.top_k ? opts.top_k : 64;
+    if (predict_cap < 8) predict_cap = 8;
+    psam_prediction_t* preds = calloc(predict_cap, sizeof(psam_prediction_t));
+    if (!preds) {
+        psam_destroy(model);
+        vocab_free(&vocab);
+        u32_list_free(&context);
+        return EXIT_INTERNAL;
+    }
+
+    u32_list_t generated = {0};
+    uint64_t rng_state = opts.seed_provided ? (uint64_t)opts.seed : ((uint64_t)time(NULL) ^ 0x9e3779b97f4a7c15ULL);
+    if (rng_state == 0) rng_state = 1;
+    bool first_output = true;
+
+    for (uint32_t step = 0; step < opts.count; ++step) {
+        int num_preds = psam_predict(model, context.data, context.size, preds, predict_cap);
+        if (num_preds <= 0) {
+            break;
+        }
+
+        uint32_t next_token = 0;
+        if (sample_prediction(preds, num_preds, opts.top_k, opts.temperature, opts.top_p, &rng_state, &next_token) != 0) {
+            break;
+        }
+
+        if (u32_list_append(&generated, next_token) != 0 || u32_list_append(&context, next_token) != 0) {
+            print_error("out of memory while generating");
+            break;
+        }
+
+        if (opts.quiet) {
+            if (vocab.size) {
+                const char* tok = vocab_lookup_token(&vocab, next_token);
+                if (!tok) {
+                    printf("%s%u", first_output ? "" : " ", next_token);
+                } else {
+                    printf("%s%s", first_output ? "" : " ", tok);
+                }
+            } else {
+                printf("%s%u", first_output ? "" : " ", next_token);
+            }
+            first_output = false;
+        }
+    }
+
+    free(preds);
+    psam_destroy(model);
+
+    if (opts.quiet) {
+        printf("\n");
+    } else {
+        if (opts.pretty) {
+            printf("{\n  \"generated\": {\n    \"ids\": [");
+        } else {
+            printf("{\"generated\":{\"ids\":[");
+        }
+
+        for (size_t i = 0; i < generated.size; ++i) {
+            if (opts.pretty) {
+                printf("%s%u", i == 0 ? "" : ", ", generated.data[i]);
+            } else {
+                printf("%s%u", i == 0 ? "" : ",", generated.data[i]);
+            }
+        }
+
+        if (opts.pretty) {
+            printf("]");
+        } else {
+            printf("]");
+        }
+
+        if (vocab.size) {
+            if (opts.pretty) {
+                printf(",\n    \"tokens\": [");
+            } else {
+                printf(",\"tokens\":[");
+            }
+            for (size_t i = 0; i < generated.size; ++i) {
+                const char* tok = vocab_lookup_token(&vocab, generated.data[i]);
+                if (!tok) tok = "<UNK>";
+                if (opts.pretty) {
+                    printf("%s\"%s\"", i == 0 ? "" : ", ", tok);
+                } else {
+                    printf("%s\"%s\"", i == 0 ? "" : ",", tok);
+                }
+            }
+            if (opts.pretty) {
+                printf("]");
+            } else {
+                printf("]");
+            }
+        }
+
+        if (opts.pretty) {
+            printf("\n  }\n}\n");
+        } else {
+            printf("}}\n");
+        }
+    }
+
+    u32_list_free(&generated);
+    vocab_free(&vocab);
+    u32_list_free(&context);
+    return EXIT_OK;
 }
 
 static int predict_command(int argc, char** argv) {
     predict_options_t opts;
     memset(&opts, 0, sizeof(opts));
     opts.top_k = 5;
+    opts.temperature = 1.0f;
+    opts.top_p = 1.0f;
 
     for (int i = 2; i < argc; ++i) {
         const char* arg = argv[i];
@@ -680,6 +1028,16 @@ static int predict_command(int argc, char** argv) {
             opts.vocab_path = argv[i];
         } else if (strcmp(arg, "--top_k") == 0) {
             if (++i >= argc || parse_uint32(argv[i], &opts.top_k) != 0) {
+                predict_usage();
+                return EXIT_BAD_ARGS;
+            }
+        } else if (strcmp(arg, "--temperature") == 0) {
+            if (++i >= argc || parse_float(argv[i], &opts.temperature) != 0 || opts.temperature <= 0.0f) {
+                predict_usage();
+                return EXIT_BAD_ARGS;
+            }
+        } else if (strcmp(arg, "--top_p") == 0) {
+            if (++i >= argc || parse_float(argv[i], &opts.top_p) != 0 || opts.top_p <= 0.0f || opts.top_p > 1.0f) {
                 predict_usage();
                 return EXIT_BAD_ARGS;
             }
@@ -753,7 +1111,8 @@ static int predict_command(int argc, char** argv) {
         return EXIT_BAD_ARGS;
     }
 
-    psam_prediction_t* preds = calloc(opts.top_k, sizeof(psam_prediction_t));
+    uint32_t predict_count = opts.top_k ? opts.top_k : 16;
+    psam_prediction_t* preds = calloc(predict_count, sizeof(psam_prediction_t));
     if (!preds) {
         psam_destroy(model);
         vocab_free(&vocab);
@@ -761,7 +1120,7 @@ static int predict_command(int argc, char** argv) {
         return EXIT_INTERNAL;
     }
 
-    int num_preds = psam_predict(model, context.data, context.size, preds, opts.top_k);
+    int num_preds = psam_predict(model, context.data, context.size, preds, predict_count);
     if (num_preds < 0) {
         print_error("psam_predict failed (%d)", num_preds);
         free(preds);
@@ -778,19 +1137,23 @@ static int predict_command(int argc, char** argv) {
     }
     for (int i = 0; i < num_preds; ++i) {
         const char* token_str = vocab.size ? vocab_lookup_token(&vocab, preds[i].token) : NULL;
+        float score = preds[i].score;
+        if (opts.temperature != 1.0f) {
+            score = preds[i].score / opts.temperature;
+        }
         if (opts.pretty) {
             printf("    {\"id\":%u", preds[i].token);
             if (token_str) {
                 printf(", \"token\":\"%s\"", token_str);
             }
-            printf(", \"score\":%.6f}", preds[i].score);
+            printf(", \"score\":%.6f}", score);
             if (i + 1 < num_preds) printf(",\n"); else printf("\n");
         } else {
             printf("{\"id\":%u", preds[i].token);
             if (token_str) {
                 printf(",\"token\":\"%s\"", token_str);
             }
-            printf(",\"score\":%.6f}", preds[i].score);
+            printf(",\"score\":%.6f}", score);
             if (i + 1 < num_preds) printf(",");
         }
     }
@@ -1439,6 +1802,8 @@ int main(int argc, char** argv) {
         return build_command(argc, argv);
     } else if (strcmp(cmd, "predict") == 0) {
         return predict_command(argc, argv);
+    } else if (strcmp(cmd, "generate") == 0) {
+        return generate_command(argc, argv);
     } else if (strcmp(cmd, "explain") == 0) {
         return explain_command(argc, argv);
     } else if (strcmp(cmd, "analyze") == 0) {

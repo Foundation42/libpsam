@@ -90,6 +90,7 @@ A lightweight CLI is built alongside the library (executable name `psam`). It wr
 psam build   --input data.txt --out model.psam --vocab-out vocab.tsv
 psam predict --model model.psam --ctx-ids 1,2,3 --top_k 5 --pretty
 psam explain --model model.psam --ctx-ids 10,77,21 --candidate-id 42 --topN 8
+psam generate --model model.psam --context "the cat" --vocab vocab.tsv --count 20 --top_k 16 --top_p 0.95 --seed 42
 psam analyze --model model.psam
 psam compose --out composite.psamc --layer base.psam --layer domain.psam
 psam inspect --model composite.psamc

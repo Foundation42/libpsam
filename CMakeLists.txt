@@ -26,6 +26,9 @@ add_executable(psam_cli core/src/cli/psam_cli.c)
 set_target_properties(psam_cli PROPERTIES OUTPUT_NAME psam)
 target_include_directories(psam_cli PRIVATE core/include)
 target_link_libraries(psam_cli PRIVATE psam Threads::Threads)
+if(NOT WIN32)
+    target_link_libraries(psam_cli PRIVATE m)
+endif()
 
 # Examples
 if(BUILD_EXAMPLES)
