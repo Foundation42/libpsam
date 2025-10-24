@@ -51,6 +51,7 @@ CFLAGS=(
         "_psam_train_batch",
         "_psam_finalize_training",
         "_psam_predict",
+        "_psam_explain",
         "_psam_add_layer",
         "_psam_remove_layer",
         "_psam_update_layer_weight",
