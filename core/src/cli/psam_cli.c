@@ -535,11 +535,22 @@ static int build_command(int argc, char** argv) {
         RETURN_BUILD(EXIT_INTERNAL);
     }
 
+    uint32_t* sequence = malloc(tokens.size * sizeof(uint32_t));
+    if (!sequence) {
+        psam_destroy(model);
+        for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
+        free(id_to_token);
+        free(sorted);
+        string_list_free(&tokens);
+        RETURN_BUILD(EXIT_INTERNAL);
+    }
+
     for (size_t i = 0; i < tokens.size; ++i) {
         char* tok = tokens.data[i];
         char** found = bsearch(&tok, sorted, unique_count, sizeof(char*), compare_str_ptr);
         if (!found) {
             print_error("internal error: token lookup failed for '%s'", tok);
+            free(sequence);
             psam_destroy(model);
             for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
             free(id_to_token);
@@ -548,16 +559,19 @@ static int build_command(int argc, char** argv) {
             RETURN_BUILD(EXIT_INTERNAL);
         }
         uint32_t id = (uint32_t)(found - sorted);
-        psam_error_t err = psam_train_token(model, id);
-        if (err != PSAM_OK) {
-            print_error("psam_train_token failed (%d)", err);
-            psam_destroy(model);
-            for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
-            free(id_to_token);
-            free(sorted);
-            string_list_free(&tokens);
-            RETURN_BUILD(EXIT_INTERNAL);
-        }
+        sequence[i] = id;
+    }
+
+    psam_error_t batch_err = psam_train_batch(model, sequence, tokens.size);
+    free(sequence);
+    if (batch_err != PSAM_OK) {
+        print_error("psam_train_batch failed (%d)", batch_err);
+        psam_destroy(model);
+        for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
+        free(id_to_token);
+        free(sorted);
+        string_list_free(&tokens);
+        RETURN_BUILD(EXIT_INTERNAL);
     }
 
     psam_error_t finalize_err = psam_finalize_training(model);
