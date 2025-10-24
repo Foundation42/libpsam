@@ -100,6 +100,45 @@ psam ids      --vocab vocab.tsv --ids 12,44,77
 
 Flags are consistent across commands (`--model`, `--ctx-ids`, `--context`, `--top_k`, `--pretty`, etc.). All commands emit JSON by default; pass `--pretty` for human-readable output. Exit codes follow `0` (ok), `2` (bad args), `3` (file missing), `4` (checksum failed), `5` (internal error).
 
+### Sample Corpora
+
+The repository ships a few tiny corpora under `corpora/text/` so you can smoke-test the CLI end to end:
+
+- `CatSat.txt` — the classic nursery-style sentences used by the web demo.
+- `Luna.txt` — a short adventure story with richer vocabulary.
+- `TheAnomaly.txt` — sci-fi vignette with longer-form structure.
+
+You can train and query a model from these with only a couple of commands:
+
+```bash
+# 1. Train a PSAM model from the CatSat corpus
+psam build \
+  --input corpora/text/CatSat.txt \
+  --out build/catsat.psam \
+  --vocab-out build/catsat.vocab \
+  --window 8 --top_k 32
+
+# 2. Peek at the next-token prediction JSON
+psam predict \
+  --model build/catsat.psam \
+  --context "the cat sat on" \
+  --top_k 5 --pretty
+
+# 3. Stream a short completion
+psam generate \
+  --model build/catsat.psam \
+  --context "the cat sat on" \
+  --count 12 --top_k 8 --top_p 0.95 --seed 17 --pretty
+
+# 4. Explain why a token won
+psam explain \
+  --model build/catsat.psam \
+  --context "the cat sat on" \
+  --candidate "the" --topN 8 --pretty
+```
+
+Swap in `corpora/text/Luna.txt` or `TheAnomaly.txt` to exercise longer sequences or story-like text.
+
 ## Installation
 
 ### Building the C Library

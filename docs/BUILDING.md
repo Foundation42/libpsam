@@ -14,6 +14,24 @@ Comprehensive build instructions for all platforms and language bindings.
 
 ## C Library
 
+### CLI Quickstart (Sample Corpora)
+
+Once the CLI is built (`psam` target), you can test-drive it using the bundled corpora:
+
+```bash
+# Train a toy model
+../psam build --input ../corpora/text/CatSat.txt --out catsat.psam --vocab-out catsat.vocab
+
+# Inspect predictions and explanations
+../psam predict --model catsat.psam --context "the cat sat on" --top_k 5 --pretty
+../psam explain --model catsat.psam --context "the cat sat on" --candidate "the" --topN 5 --pretty
+
+# Stream a tiny completion
+../psam generate --model catsat.psam --context "the cat sat on" --count 12 --seed 42 --pretty
+```
+
+Swap in `../corpora/text/Luna.txt` or `../corpora/text/TheAnomaly.txt` for longer-form material.
+
 ### Prerequisites
 
 - C11 compiler (gcc, clang, MSVC)
