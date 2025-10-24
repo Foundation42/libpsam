@@ -261,7 +261,7 @@ int psam_explain(
     }
 
     if (candidate_token >= model->config.vocab_size) {
-        return PSAM_ERR_INVALID_TOKEN;
+        return 0;  /* Token out of vocabulary, no explanation */
     }
 
     psam_lock_rdlock(&model->lock);
