@@ -42,12 +42,18 @@ psam_train_batch(model, tokens, 5);
 psam_finalize_training(model);
 
 // Predict
+uint32_t context[] = {1, 2, 3};
+int context_len = 3;
 psam_prediction_t predictions[10];
 int n = psam_predict(model, context, context_len, predictions, 10);
 
 // Save/load
 psam_save(model, "model.psam");
 psam_model_t* loaded = psam_load("model.psam");
+if (!loaded) {
+    fprintf(stderr, "Failed to load model\n");
+    return 1;
+}
 ```
 
 ### JavaScript/TypeScript
@@ -66,7 +72,7 @@ psam.save('model.psam');
 ### Python
 
 ```python
-from psam import PSAM
+from psam import PSAM  # Note: import module is 'psam', package name is 'libpsam'
 
 psam = PSAM(vocab_size=50000, window=8, top_k=32)
 psam.train_batch([1, 2, 3, 4, 5])
