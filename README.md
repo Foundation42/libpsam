@@ -116,6 +116,8 @@ cmake --build .
 
 # Optional: Install system-wide
 sudo cmake --install .
+
+# (Installs `libpsam.so`, headers, the `psam` CLI, and `man 1 psam`.)
 ```
 
 ### Language Bindings

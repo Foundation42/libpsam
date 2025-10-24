@@ -10,6 +10,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+
+#if defined(_WIN32)
+#include <io.h>
+#define psam_fseeko _fseeki64
+#define psam_ftello _ftelli64
+typedef int64_t psam_off_t;
+#else
+#define psam_fseeko fseeko
+#define psam_ftello ftello
+typedef off_t psam_off_t;
+#endif
 #include <sys/types.h>
 
 /* External SHA-256 functions */
@@ -222,12 +234,12 @@ static int compute_self_hash_excluding(const char* path, uint64_t offset, size_t
         return -1;
     }
 
-    if (fseeko(f, 0, SEEK_END) != 0) {
+    if (psam_fseeko(f, 0, SEEK_END) != 0) {
         fclose(f);
         return -1;
     }
 
-    off_t file_size = ftello(f);
+    psam_off_t file_size = psam_ftello(f);
     if (file_size < 0) {
         fclose(f);
         return -1;
@@ -236,7 +248,7 @@ static int compute_self_hash_excluding(const char* path, uint64_t offset, size_t
         fclose(f);
         return -1;
     }
-    if (fseeko(f, 0, SEEK_SET) != 0) {
+    if (psam_fseeko(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return -1;
     }
@@ -271,11 +283,11 @@ static int verify_model_reference(const psamc_model_ref_t* ref) {
         return -1;
     }
 
-    if (fseeko(f, 0, SEEK_END) != 0) {
+    if (psam_fseeko(f, 0, SEEK_END) != 0) {
         fclose(f);
         return -1;
     }
-    uint64_t actual_size = (uint64_t)ftello(f);
+    uint64_t actual_size = (uint64_t)psam_ftello(f);
     fclose(f);
 
     if (actual_size != ref->size) {
@@ -419,7 +431,7 @@ int psamc_save(
             free(sections);
             return -1;
         }
-        if (fseeko(patch, (off_t)manifest_self_hash_offset_abs, SEEK_SET) != 0) {
+        if (psam_fseeko(patch, (psam_off_t)manifest_self_hash_offset_abs, SEEK_SET) != 0) {
             fclose(patch);
             free(sections);
             return -1;
@@ -453,7 +465,7 @@ static int read_manifest_section(FILE* f, const psamc_section_entry_t* section, 
         return -1;
     }
 
-    if (fseeko(f, (off_t)section->offset, SEEK_SET) != 0) {
+    if (psam_fseeko(f, (psam_off_t)section->offset, SEEK_SET) != 0) {
         return -1;
     }
 
@@ -529,7 +541,7 @@ static int read_manifest_section(FILE* f, const psamc_section_entry_t* section, 
     }
 
     uint64_t absolute_self_hash_offset = section->offset + section->size - PSAMC_SOURCE_HASH_SIZE;
-    if (fseeko(f, (off_t)absolute_self_hash_offset, SEEK_SET) != 0) {
+    if (psam_fseeko(f, (psam_off_t)absolute_self_hash_offset, SEEK_SET) != 0) {
         free_manifest(out_manifest);
         return -1;
     }

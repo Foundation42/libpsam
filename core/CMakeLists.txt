@@ -39,7 +39,6 @@ endif()
 set_target_properties(psam PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 0
-    PUBLIC_HEADER "include/psam.h;include/psam_composite.h"
 )
 
 # Export compile commands for IDE integration

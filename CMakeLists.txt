@@ -10,6 +10,8 @@ option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 option(BUILD_EXAMPLES "Build example programs" ON)
 option(BUILD_WASM "Build WebAssembly module" OFF)
 
+include(GNUInstallDirs)
+
 # Compiler flags
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -O3 -fPIC)
@@ -36,21 +38,25 @@ if(BUILD_EXAMPLES)
 endif()
 
 # Installation
-include(GNUInstallDirs)
 
 install(TARGETS psam
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
 install(TARGETS psam_cli
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
-install(FILES core/include/psam.h
+install(FILES
+    core/include/psam.h
+    core/include/psam_composite.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(FILES docs/psam.1
+    DESTINATION ${CMAKE_INSTALL_MANDIR}/man1
 )
 
 # Package configuration

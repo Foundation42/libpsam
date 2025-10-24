@@ -1,0 +1,111 @@
+.TH PSAM 1 "October 2025" "psam 0.1" "User Commands"
+.SH NAME
+psam \- Position-Specific Association Memory command line utility
+.SH SYNOPSIS
+.B psam
+\fICOMMAND\fR [options]
+.br
+.SH DESCRIPTION
+The
+.B psam
+utility provides a thin command line wrapper over the libpsam C API. It
+allows you to train models from text files, inspect statistics, generate
+continuations, and manipulate composite manifests without writing any
+code. All commands emit JSON by default; pass
+.B --pretty
+for human readable formatting or
+.B --quiet
+for terse streaming output where supported.
+
+.SH COMMANDS
+.TP
+.B build
+Train a PSAM model from text input.
+.TP
+.B compose
+Create or update a .psamc composite manifest with integrity checking.
+.TP
+.B predict
+Compute top predictions for a given context.
+.TP
+.B generate
+Sample a continuation using top-k/top-p decoding.
+.TP
+.B explain
+Show the contributing context terms for a candidate token.
+.TP
+.B analyze
+Report core model statistics.
+.TP
+.B inspect
+Print header metadata for .psam or .psamc files.
+.TP
+.B tokenize
+Convert text to token IDs using a vocabulary TSV.
+.TP
+.B ids
+Convert token IDs back to text using a vocabulary TSV.
+
+.SH OPTIONS
+Each subcommand has its own options; run
+.B psam COMMAND --help
+for details. Common parameters include:
+.TP
+.B --model PATH
+Path to a .psam model file (required by most commands).
+.TP
+.B --context STRING
+Raw text used as context (requires --vocab).
+.TP
+.B --ctx-ids LIST
+Comma separated token IDs used as context.
+.TP
+.B --top_k N
+Number of predictions to consider.
+.TP
+.B --top_p FLOAT
+Nucleus sampling threshold for generate.
+.TP
+.B --temperature FLOAT
+Softmax temperature for sampling.
+.TP
+.B --seed N
+Deterministic random seed for generate.
+
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 2
+Invalid arguments.
+.TP
+.B 3
+Missing input files.
+.TP
+.B 4
+Checksum or integrity failure.
+.TP
+.B 5
+Internal error.
+
+.SH EXAMPLES
+.SS Train a model from text
+.PP
+.nf
+psam build --input data.txt \\
+           --out model.psam \\
+           --vocab-out vocab.tsv
+.fi
+.SS Generate a continuation
+.PP
+.nf
+psam generate --model model.psam \\
+              --context "the cat" --vocab vocab.tsv \\
+              --count 32 --top_k 16 --top_p 0.95 --temperature 0.9
+.fi
+
+.SH SEE ALSO
+.UR https://github.com/Foundation42/libpsam
+.B libpsam documentation
+.UE
