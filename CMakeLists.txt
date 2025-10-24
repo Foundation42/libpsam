@@ -21,6 +21,12 @@ find_package(Threads REQUIRED)
 # Core library
 add_subdirectory(core)
 
+# CLI
+add_executable(psam_cli core/src/cli/psam_cli.c)
+set_target_properties(psam_cli PROPERTIES OUTPUT_NAME psam)
+target_include_directories(psam_cli PRIVATE core/include)
+target_link_libraries(psam_cli PRIVATE psam Threads::Threads)
+
 # Examples
 if(BUILD_EXAMPLES)
     add_subdirectory(examples/c)
@@ -32,6 +38,11 @@ include(GNUInstallDirs)
 install(TARGETS psam
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+    PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+)
+
+install(TARGETS psam_cli
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 

@@ -116,7 +116,7 @@ static int write_manifest_section(FILE* f, const psamc_manifest_t* manifest, uin
 
     char created_by[PSAMC_CREATED_BY_MAX] = {0};
     if (manifest->created_by[0] != '\0') {
-        strncpy(created_by, manifest->created_by, PSAMC_CREATED_BY_MAX - 1);
+        snprintf(created_by, PSAMC_CREATED_BY_MAX, "%s", manifest->created_by);
     }
     if (fwrite(created_by, sizeof(char), PSAMC_CREATED_BY_MAX, f) != PSAMC_CREATED_BY_MAX) {
         return -1;
@@ -135,7 +135,7 @@ static int write_manifest_section(FILE* f, const psamc_manifest_t* manifest, uin
         psamc_model_ref_disk_t disk = {0};
         const psamc_model_ref_t* ref = &manifest->refs[i];
         if (ref->url[0] != '\0') {
-            strncpy(disk.url, ref->url, PSAMC_MAX_URL_LENGTH - 1);
+            snprintf(disk.url, PSAMC_MAX_URL_LENGTH, "%s", ref->url);
         }
         memcpy(disk.sha256, ref->sha256.hash, PSAMC_SOURCE_HASH_SIZE);
         disk.size = ref->size;
@@ -143,7 +143,7 @@ static int write_manifest_section(FILE* f, const psamc_manifest_t* manifest, uin
         disk.version_minor = ref->version.minor;
         disk.version_patch = ref->version.patch;
         if (ref->model_id[0] != '\0') {
-            strncpy(disk.model_id, ref->model_id, PSAMC_MAX_MODEL_ID - 1);
+            snprintf(disk.model_id, PSAMC_MAX_MODEL_ID, "%s", ref->model_id);
         }
         if (fwrite(&disk, sizeof(psamc_model_ref_disk_t), 1, f) != 1) {
             return -1;
@@ -154,13 +154,13 @@ static int write_manifest_section(FILE* f, const psamc_manifest_t* manifest, uin
         psamc_source_disk_t disk = {0};
         const psamc_source_t* src = &manifest->sources[i];
         if (src->label[0] != '\0') {
-            strncpy(disk.label, src->label, PSAMC_SOURCE_LABEL_MAX - 1);
+            snprintf(disk.label, PSAMC_SOURCE_LABEL_MAX, "%s", src->label);
         }
         if (src->uri[0] != '\0') {
-            strncpy(disk.uri, src->uri, PSAMC_SOURCE_URI_MAX - 1);
+            snprintf(disk.uri, PSAMC_SOURCE_URI_MAX, "%s", src->uri);
         }
         if (src->license[0] != '\0') {
-            strncpy(disk.license, src->license, PSAMC_SOURCE_LICENSE_MAX - 1);
+            snprintf(disk.license, PSAMC_SOURCE_LICENSE_MAX, "%s", src->license);
         }
         if (fwrite(&disk, sizeof(psamc_source_disk_t), 1, f) != 1) {
             return -1;
@@ -473,7 +473,7 @@ static int read_manifest_section(FILE* f, const psamc_section_entry_t* section, 
         return -1;
     }
     created_by_raw[PSAMC_CREATED_BY_MAX - 1] = '\0';
-    strncpy(out_manifest->created_by, created_by_raw, PSAMC_CREATED_BY_MAX - 1);
+    snprintf(out_manifest->created_by, PSAMC_CREATED_BY_MAX, "%s", created_by_raw);
 
     if (fread(out_manifest->source_hash.hash, sizeof(uint8_t), PSAMC_SOURCE_HASH_SIZE, f) != PSAMC_SOURCE_HASH_SIZE) {
         return -1;
@@ -499,13 +499,13 @@ static int read_manifest_section(FILE* f, const psamc_section_entry_t* section, 
         }
 
         psamc_model_ref_t* ref = &out_manifest->refs[i];
-        strncpy(ref->url, disk.url, PSAMC_MAX_URL_LENGTH - 1);
+        snprintf(ref->url, PSAMC_MAX_URL_LENGTH, "%s", disk.url);
         memcpy(ref->sha256.hash, disk.sha256, PSAMC_SOURCE_HASH_SIZE);
         ref->size = disk.size;
         ref->version.major = disk.version_major;
         ref->version.minor = disk.version_minor;
         ref->version.patch = disk.version_patch;
-        strncpy(ref->model_id, disk.model_id, PSAMC_MAX_MODEL_ID - 1);
+        snprintf(ref->model_id, PSAMC_MAX_MODEL_ID, "%s", disk.model_id);
     }
 
     if (source_count > 0) {
@@ -523,9 +523,9 @@ static int read_manifest_section(FILE* f, const psamc_section_entry_t* section, 
             return -1;
         }
         psamc_source_t* src = &out_manifest->sources[i];
-        strncpy(src->label, disk.label, PSAMC_SOURCE_LABEL_MAX - 1);
-        strncpy(src->uri, disk.uri, PSAMC_SOURCE_URI_MAX - 1);
-        strncpy(src->license, disk.license, PSAMC_SOURCE_LICENSE_MAX - 1);
+        snprintf(src->label, PSAMC_SOURCE_LABEL_MAX, "%s", disk.label);
+        snprintf(src->uri, PSAMC_SOURCE_URI_MAX, "%s", disk.uri);
+        snprintf(src->license, PSAMC_SOURCE_LICENSE_MAX, "%s", disk.license);
     }
 
     uint64_t absolute_self_hash_offset = section->offset + section->size - PSAMC_SOURCE_HASH_SIZE;

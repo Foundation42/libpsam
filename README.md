@@ -82,6 +82,23 @@ token_ids, scores = psam.predict([1, 2, 3], max_predictions=10)
 psam.save('model.psam')
 ```
 
+### Command Line Interface
+
+A lightweight CLI is built alongside the library (executable name `psam`). It wraps the C API so you can train, inspect, and query models without writing code.
+
+```
+psam build   --input data.txt --out model.psam --vocab-out vocab.tsv
+psam predict --model model.psam --ctx-ids 1,2,3 --top_k 5 --pretty
+psam explain --model model.psam --ctx-ids 10,77,21 --candidate-id 42 --topN 8
+psam analyze --model model.psam
+psam compose --out composite.psamc --layer base.psam --layer domain.psam
+psam inspect --model composite.psamc
+psam tokenize --vocab vocab.tsv --context "she sells sea shells"
+psam ids      --vocab vocab.tsv --ids 12,44,77
+```
+
+Flags are consistent across commands (`--model`, `--ctx-ids`, `--context`, `--top_k`, `--pretty`, etc.). All commands emit JSON by default; pass `--pretty` for human-readable output. Exit codes follow `0` (ok), `2` (bad args), `3` (file missing), `4` (checksum failed), `5` (internal error).
+
 ## Installation
 
 ### Building the C Library

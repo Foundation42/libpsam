@@ -8,6 +8,8 @@ set(PSAM_SOURCES
     src/core/infer.c
     src/composition/layers.c
     src/io/serialize.c
+    src/io/composite.c
+    src/io/sha256.c
 )
 
 # Create library
@@ -37,7 +39,7 @@ endif()
 set_target_properties(psam PROPERTIES
     VERSION ${PROJECT_VERSION}
     SOVERSION 0
-    PUBLIC_HEADER include/psam.h
+    PUBLIC_HEADER "include/psam.h;include/psam_composite.h"
 )
 
 # Export compile commands for IDE integration
