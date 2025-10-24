@@ -565,7 +565,7 @@ static int read_config_section(FILE* f, const psamc_section_entry_t* section, ps
         return -1;
     }
 
-    if (fseeko(f, (off_t)section->offset, SEEK_SET) != 0) {
+    if (psam_fseeko(f, (psam_off_t)section->offset, SEEK_SET) != 0) {
         return -1;
     }
 
@@ -713,3 +713,4 @@ void psamc_free(psamc_composite_t* composite) {
     free_manifest(&composite->manifest);
     free(composite);
 }
+#include <sys/types.h>
