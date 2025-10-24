@@ -34,6 +34,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "psam_export.h"
+
 typedef struct psam_model psam_model_t;
 
 #ifdef __cplusplus
@@ -233,7 +235,7 @@ static const psamc_hyperparams_t PSAMC_PRESET_TINY_CONFIG = {
 /**
  * Save a composite model with manifest and integrity checking
  */
-int psamc_save(
+PSAM_API int psamc_save(
     const char* path,
     const psam_model_t* base_model,
     const psamc_hyperparams_t* hyperparams,
@@ -247,29 +249,29 @@ int psamc_save(
  * @param verify_integrity If true, verify SHA-256 checksums & manifest references
  * @return Composite handle or NULL on error
  */
-psamc_composite_t* psamc_load(const char* path, bool verify_integrity);
+PSAM_API psamc_composite_t* psamc_load(const char* path, bool verify_integrity);
 
 /**
  * Release resources allocated by psamc_load
  */
-void psamc_free(psamc_composite_t* composite);
+PSAM_API void psamc_free(psamc_composite_t* composite);
 
 /**
  * Verify integrity of external references in manifest
  *
  * @return 0 on success, -1 on mismatch
  */
-int psamc_verify_manifest(const psamc_manifest_t* manifest);
+PSAM_API int psamc_verify_manifest(const psamc_manifest_t* manifest);
 
 /**
  * Compute SHA-256 hash of a file
  */
-int psamc_sha256_file(const char* path, sha256_hash_t* out_hash);
+PSAM_API int psamc_sha256_file(const char* path, sha256_hash_t* out_hash);
 
 /**
  * Get hyperparameters for a preset
  */
-const psamc_hyperparams_t* psamc_get_preset(psamc_preset_t preset);
+PSAM_API const psamc_hyperparams_t* psamc_get_preset(psamc_preset_t preset);
 
 #ifdef __cplusplus
 }

@@ -14,6 +14,33 @@ set(PSAM_SOURCES
 
 # Create library
 add_library(psam ${PSAM_SOURCES})
+add_library(psam::psam ALIAS psam)
+
+if(WIN32 AND BUILD_SHARED_LIBS)
+    set_target_properties(psam PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+endif()
+
+if(BUILD_SHARED_LIBS)
+    target_compile_definitions(psam
+        PRIVATE PSAM_BUILDING_DLL
+        PUBLIC PSAM_SHARED
+    )
+endif()
+
+set_target_properties(psam PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+foreach(cfg IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
+    string(TOUPPER "${cfg}" cfg_upper)
+    set_target_properties(psam PROPERTIES
+        ARCHIVE_OUTPUT_DIRECTORY_${cfg_upper} ${CMAKE_CURRENT_BINARY_DIR}/${cfg}
+        LIBRARY_OUTPUT_DIRECTORY_${cfg_upper} ${CMAKE_CURRENT_BINARY_DIR}/${cfg}
+        RUNTIME_OUTPUT_DIRECTORY_${cfg_upper} ${CMAKE_CURRENT_BINARY_DIR}/${cfg}
+    )
+endforeach()
 
 # Include directories
 target_include_directories(psam

@@ -23,6 +23,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "psam_export.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -136,7 +138,7 @@ typedef enum {
  *     return 1;
  *   }
  */
-psam_model_t* psam_create(uint32_t vocab_size, uint32_t window, uint32_t top_k);
+PSAM_API psam_model_t* psam_create(uint32_t vocab_size, uint32_t window, uint32_t top_k);
 
 /**
  * Create a new PSAM model with custom configuration.
@@ -157,7 +159,7 @@ psam_model_t* psam_create(uint32_t vocab_size, uint32_t window, uint32_t top_k);
  *   };
  *   psam_model_t* model = psam_create_with_config(&config);
  */
-psam_model_t* psam_create_with_config(const psam_config_t* config);
+PSAM_API psam_model_t* psam_create_with_config(const psam_config_t* config);
 
 /**
  * Destroy a PSAM model and free all associated memory.
@@ -169,7 +171,7 @@ psam_model_t* psam_create_with_config(const psam_config_t* config);
  *   psam_destroy(model);
  *   model = NULL;
  */
-void psam_destroy(psam_model_t* model);
+PSAM_API void psam_destroy(psam_model_t* model);
 
 /**
  * Get provenance metadata for a model (thread-safe).
@@ -178,7 +180,7 @@ void psam_destroy(psam_model_t* model);
  * @param out_provenance Output structure to populate
  * @return PSAM_OK on success, error code otherwise
  */
-psam_error_t psam_get_provenance(const psam_model_t* model, psam_provenance_t* out_provenance);
+PSAM_API psam_error_t psam_get_provenance(const psam_model_t* model, psam_provenance_t* out_provenance);
 
 /**
  * Set provenance metadata for a model (thread-safe).
@@ -188,7 +190,7 @@ psam_error_t psam_get_provenance(const psam_model_t* model, psam_provenance_t* o
  * @param provenance Provenance data to store
  * @return PSAM_OK on success, error code otherwise
  */
-psam_error_t psam_set_provenance(psam_model_t* model, const psam_provenance_t* provenance);
+PSAM_API psam_error_t psam_set_provenance(psam_model_t* model, const psam_provenance_t* provenance);
 
 /* ============================ Training ============================ */
 
@@ -209,7 +211,7 @@ psam_error_t psam_set_provenance(psam_model_t* model, const psam_provenance_t* p
  *     }
  *   }
  */
-psam_error_t psam_train_token(psam_model_t* model, uint32_t token);
+PSAM_API psam_error_t psam_train_token(psam_model_t* model, uint32_t token);
 
 /**
  * Process multiple tokens in a batch during training.
@@ -224,7 +226,7 @@ psam_error_t psam_train_token(psam_model_t* model, uint32_t token);
  *   uint32_t tokens[] = {1, 2, 3, 4, 5};
  *   psam_train_batch(model, tokens, 5);
  */
-psam_error_t psam_train_batch(psam_model_t* model, const uint32_t* tokens, size_t num_tokens);
+PSAM_API psam_error_t psam_train_batch(psam_model_t* model, const uint32_t* tokens, size_t num_tokens);
 
 /**
  * Finalize training by computing PPMI/IDF transformations and building CSR storage.
@@ -238,7 +240,7 @@ psam_error_t psam_train_batch(psam_model_t* model, const uint32_t* tokens, size_
  *   // Now ready for inference
  *   psam_predict(model, context, context_len, preds, top_k);
  */
-psam_error_t psam_finalize_training(psam_model_t* model);
+PSAM_API psam_error_t psam_finalize_training(psam_model_t* model);
 
 /* ============================ Inference ============================ */
 
@@ -267,7 +269,7 @@ psam_error_t psam_finalize_training(psam_model_t* model);
  *     }
  *   }
  */
-int psam_predict(
+PSAM_API int psam_predict(
     psam_model_t* model,
     const uint32_t* context,
     size_t context_len,
@@ -299,7 +301,7 @@ int psam_predict(
  *   psam_predict_batch(model, contexts, lens, 2,
  *                      (psam_prediction_t**)preds, 32, counts);
  */
-psam_error_t psam_predict_batch(
+PSAM_API psam_error_t psam_predict_batch(
     psam_model_t* model,
     const uint32_t** contexts,
     const size_t* context_lens,
@@ -343,7 +345,7 @@ psam_error_t psam_predict_batch(
  *     // allocate a larger buffer (info.term_count entries) and call again
  *   }
  */
-psam_error_t psam_explain(
+PSAM_API psam_error_t psam_explain(
     psam_model_t* model,
     const uint32_t* context,
     size_t context_len,
@@ -382,7 +384,7 @@ psam_error_t psam_explain(
  *   psam_model_t* legal = psam_load("legal.psam");
  *   psam_add_layer(base, "legal", legal, 1.5);
  */
-psam_error_t psam_add_layer(
+PSAM_API psam_error_t psam_add_layer(
     psam_model_t* base,
     const char* layer_id,
     psam_model_t* overlay,
@@ -397,7 +399,7 @@ psam_error_t psam_add_layer(
  * @param layer_id Layer identifier
  * @return PSAM_OK on success, PSAM_ERR_LAYER_NOT_FOUND if ID doesn't exist
  */
-psam_error_t psam_remove_layer(psam_model_t* base, const char* layer_id);
+PSAM_API psam_error_t psam_remove_layer(psam_model_t* base, const char* layer_id);
 
 /**
  * Update the weight of an existing layer.
@@ -407,7 +409,7 @@ psam_error_t psam_remove_layer(psam_model_t* base, const char* layer_id);
  * @param new_weight New blending weight
  * @return PSAM_OK on success, PSAM_ERR_LAYER_NOT_FOUND if ID doesn't exist
  */
-psam_error_t psam_update_layer_weight(psam_model_t* base, const char* layer_id, float new_weight);
+PSAM_API psam_error_t psam_update_layer_weight(psam_model_t* base, const char* layer_id, float new_weight);
 
 /**
  * Get list of active layer IDs.
@@ -417,7 +419,7 @@ psam_error_t psam_update_layer_weight(psam_model_t* base, const char* layer_id, 
  * @param max_layers Size of output buffer
  * @return Number of layers (0 to max_layers), or negative error code
  */
-int psam_list_layers(psam_model_t* model, const char** out_ids, size_t max_layers);
+PSAM_API int psam_list_layers(psam_model_t* model, const char** out_ids, size_t max_layers);
 
 /* ============================ Persistence ============================ */
 
@@ -432,7 +434,7 @@ int psam_list_layers(psam_model_t* model, const char** out_ids, size_t max_layer
  * Example:
  *   psam_save(model, "my_model.psam");
  */
-psam_error_t psam_save(const psam_model_t* model, const char* path);
+PSAM_API psam_error_t psam_save(const psam_model_t* model, const char* path);
 
 /**
  * Load model from binary file.
@@ -447,7 +449,7 @@ psam_error_t psam_save(const psam_model_t* model, const char* path);
  *     return 1;
  *   }
  */
-psam_model_t* psam_load(const char* path);
+PSAM_API psam_model_t* psam_load(const char* path);
 
 /* ============================ Introspection ============================ */
 
@@ -464,7 +466,7 @@ psam_model_t* psam_load(const char* path);
  *   printf("Vocab: %u, Edges: %lu, Memory: %zu bytes\n",
  *          stats.vocab_size, stats.edge_count, stats.memory_bytes);
  */
-psam_error_t psam_get_stats(const psam_model_t* model, psam_stats_t* out_stats);
+PSAM_API psam_error_t psam_get_stats(const psam_model_t* model, psam_stats_t* out_stats);
 
 /**
  * Get human-readable error message for an error code.
@@ -472,14 +474,14 @@ psam_error_t psam_get_stats(const psam_model_t* model, psam_stats_t* out_stats);
  * @param error Error code
  * @return Error message string (static, do not free)
  */
-const char* psam_error_string(psam_error_t error);
+PSAM_API const char* psam_error_string(psam_error_t error);
 
 /**
  * Get libpsam version string.
  *
  * @return Version string (e.g., "1.0.0")
  */
-const char* psam_version(void);
+PSAM_API const char* psam_version(void);
 
 #ifdef __cplusplus
 }
