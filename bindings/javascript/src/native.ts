@@ -4,7 +4,7 @@
  * Supports both Bun (bun:ffi) and Node.js (via dynamic detection)
  */
 
-import type { TokenId, InferenceResult, ModelStats, TrainablePSAM, PersistenceOptions, ExplainTerm } from './types.js';
+import type { TokenId, InferenceResult, ModelStats, TrainablePSAM, PersistenceOptions, ExplainTerm, ExplainResult } from './types.js';
 
 // Platform-specific FFI loading
 let FFI: any = null;
@@ -49,7 +49,8 @@ function checkError(code: number, operation: string, lib: any): void {
 
 const PREDICTION_SIZE = 12; // sizeof(psam_prediction_t)
 const STATS_SIZE = 32; // sizeof(psam_stats_t)
-const EXPLAIN_TERM_SIZE = 28; // sizeof(psam_explain_term_t)
+const EXPLAIN_TERM_SIZE = 24; // sizeof(psam_explain_term_t)
+const EXPLAIN_RESULT_SIZE = 16; // sizeof(psam_explain_result_t)
 
 let cachedLib: any = null;
 
@@ -75,7 +76,7 @@ function loadLibrary(libraryPath?: string): any {
         returns: FFIType.i32,
       },
       psam_explain: {
-        args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u32, FFIType.ptr, FFIType.u64],
+        args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u32, FFIType.ptr, FFIType.i32, FFIType.ptr],
         returns: FFIType.i32,
       },
       psam_add_layer: { args: [FFIType.ptr, FFIType.cstring, FFIType.ptr, FFIType.f32], returns: FFIType.i32 },
@@ -97,7 +98,7 @@ function loadLibrary(libraryPath?: string): any {
       psam_train_batch: ['int32', ['pointer', 'pointer', 'uint64']],
       psam_finalize_training: ['int32', ['pointer']],
       psam_predict: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'uint64']],
-      psam_explain: ['int32', ['pointer', 'pointer', 'uint64', 'uint32', 'pointer', 'uint64']],
+      psam_explain: ['int32', ['pointer', 'pointer', 'uint64', 'uint32', 'pointer', 'int32', 'pointer']],
       psam_add_layer: ['int32', ['pointer', 'string', 'pointer', 'float']],
       psam_remove_layer: ['int32', ['pointer', 'string']],
       psam_update_layer_weight: ['int32', ['pointer', 'string', 'float']],
@@ -215,43 +216,61 @@ export class PSAMNative implements TrainablePSAM {
     return { ids, scores };
   }
 
-  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainTerm[] {
+  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainResult {
     const symbols = this.lib.symbols || this.lib;
     const limit = maxTerms ?? 32;
 
-    const outBuffer = new Uint8Array(limit * EXPLAIN_TERM_SIZE);
     const contextArray = new Uint32Array(context);
+    const resultBuffer = new Uint8Array(EXPLAIN_RESULT_SIZE);
 
-    const numTerms = symbols.psam_explain(
+    const termBuffer = limit > 0 ? new Uint8Array(limit * EXPLAIN_TERM_SIZE) : null;
+
+    const err = symbols.psam_explain(
       this.handle,
       contextArray,
       BigInt(contextArray.length),
       candidateToken,
-      outBuffer,
-      BigInt(limit)
+      termBuffer ?? 0,
+      limit,
+      resultBuffer
     );
 
-    if (numTerms < 0) {
-      checkError(numTerms, 'explain', this.lib);
+    if (err < 0) {
+      checkError(err, 'explain', this.lib);
     }
+
+    const resultView = new DataView(resultBuffer.buffer);
+    const candidate = resultView.getUint32(0, true);
+    const total = resultView.getFloat32(4, true);
+    const bias = resultView.getFloat32(8, true);
+    const termCount = resultView.getInt32(12, true);
 
     const terms: ExplainTerm[] = [];
-    const view = new DataView(outBuffer.buffer);
 
-    for (let i = 0; i < numTerms; i++) {
-      const offset = i * EXPLAIN_TERM_SIZE;
-      terms.push({
-        sourceToken: view.getUint32(offset, true),
-        sourcePosition: view.getInt32(offset + 4, true),
-        relativeOffset: view.getInt32(offset + 8, true),
-        baseWeight: view.getFloat32(offset + 12, true),
-        idfFactor: view.getFloat32(offset + 16, true),
-        distanceDecay: view.getFloat32(offset + 20, true),
-        contribution: view.getFloat32(offset + 24, true),
-      });
+    if (termBuffer && termCount > 0) {
+      const view = new DataView(termBuffer.buffer);
+      const written = Math.min(termCount, limit);
+
+      for (let i = 0; i < written; i++) {
+        const base = i * EXPLAIN_TERM_SIZE;
+        terms.push({
+          source: view.getUint32(base, true),
+          offset: view.getInt16(base + 4, true),
+          weight: view.getFloat32(base + 8, true),
+          idf: view.getFloat32(base + 12, true),
+          decay: view.getFloat32(base + 16, true),
+          contribution: view.getFloat32(base + 20, true),
+        });
+      }
     }
 
-    return terms;
+    return {
+      candidate,
+      total,
+      bias,
+      termCount,
+      terms,
+    };
   }
 
   sample(context: TokenId[], temperature: number = 1.0): TokenId {

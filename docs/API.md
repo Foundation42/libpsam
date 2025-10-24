@@ -55,13 +55,23 @@ typedef struct {
 ```c
 typedef struct {
     uint32_t source_token;    // Context token that contributed
-    int32_t source_position;  // Position of source token in context
-    int32_t relative_offset;  // Relative position (+/- offset)
-    float base_weight;        // Base association weight (PPMI-adjusted)
-    float idf_factor;         // IDF weighting factor
-    float distance_decay;     // Distance decay factor (exp(-α·|offset|))
-    float contribution;       // Final contribution (weight × idf × decay)
+    int16_t  rel_offset;      // Relative position delta (e.g. -3)
+    float    weight_ppmi;     // Base association weight (PPMI-adjusted)
+    float    idf;             // IDF weighting factor
+    float    decay;           // Distance decay factor
+    float    contribution;    // weight_ppmi * idf * decay
 } psam_explain_term_t;
+```
+
+#### `psam_explain_result_t`
+
+```c
+typedef struct {
+    uint32_t candidate;       // Token being explained
+    float    total_score;     // Final sampler score (bias + contributions)
+    float    bias_score;      // Baseline bias score for the candidate
+    int32_t  term_count;      // Total contributing terms discovered
+} psam_explain_result_t;
 ```
 
 #### `psam_stats_t`
@@ -173,13 +183,14 @@ Generate predictions for a given context.
 ##### `psam_explain`
 
 ```c
-int psam_explain(
+psam_error_t psam_explain(
     psam_model_t* model,
     const uint32_t* context,
     size_t context_len,
     uint32_t candidate_token,
     psam_explain_term_t* out_terms,
-    size_t max_terms
+    int max_terms,
+    psam_explain_result_t* result
 );
 ```
 
@@ -192,24 +203,50 @@ This exposes PSAM's interpretability superpower: every prediction can be traced 
 - `context` - Array of context token IDs
 - `context_len` - Number of tokens in context
 - `candidate_token` - Token ID to explain
-- `out_terms` - Output buffer for explanation terms (caller-allocated)
-- `max_terms` - Size of output buffer
+- `out_terms` - Output buffer for explanation terms (caller-allocated, can be `NULL` if probing size)
+- `max_terms` - Size of output buffer (`0` to query required capacity)
+- `result` - Metadata describing the explanation
 
-**Returns:** Number of terms written (≥0), or negative error code
+**Returns:** `PSAM_OK` on success, or negative error code
 
 **Example:**
 ```c
 uint32_t context[] = {10, 20, 30};
-psam_explain_term_t terms[32];
-int n = psam_explain(model, context, 3, 42, terms, 32);
+psam_explain_term_t terms[16];
+psam_explain_result_t info;
 
-for (int i = 0; i < n; i++) {
-    printf("  Token %u at pos %d (offset %+d): "
-           "weight=%.3f × idf=%.3f × decay=%.3f = %.4f\n",
-           terms[i].source_token, terms[i].source_position,
-           terms[i].relative_offset, terms[i].base_weight,
-           terms[i].idf_factor, terms[i].distance_decay,
-           terms[i].contribution);
+psam_error_t err = psam_explain(model, context, 3, 42, terms, 16, &info);
+if (err == PSAM_OK) {
+    int written = info.term_count < 16 ? info.term_count : 16;
+    printf("candidate=%u bias=%.4f total=%.4f terms=%d\n",
+           info.candidate, info.bias_score, info.total_score, info.term_count);
+
+    for (int i = 0; i < written; i++) {
+        printf("  token=%u offset=%+d weight=%.3f idf=%.3f decay=%.3f contribution=%.4f\n",
+               terms[i].source_token, terms[i].rel_offset,
+               terms[i].weight_ppmi, terms[i].idf, terms[i].decay,
+               terms[i].contribution);
+    }
+
+    if (info.term_count > written) {
+        // Allocate a larger buffer and call again if you need the full list.
+    }
+} else {
+    fprintf(stderr, "Explain failed: %d\n", err);
+}
+```
+
+**JSON log format**
+
+```json
+{
+  "candidate": 1234,
+  "total": 2.7183,
+  "bias": 0.4200,
+  "term_count": 5,
+  "terms": [
+    {"source": 77, "offset": -2, "weight": 0.84, "idf": 1.09, "decay": 0.61, "contribution": 0.56}
+  ]
 }
 ```
 
@@ -340,13 +377,20 @@ interface InferenceResult {
 }
 
 interface ExplainTerm {
-  sourceToken: TokenId;
-  sourcePosition: number;
-  relativeOffset: number;
-  baseWeight: number;
-  idfFactor: number;
-  distanceDecay: number;
+  source: TokenId;
+  offset: number;
+  weight: number;
+  idf: number;
+  decay: number;
   contribution: number;
+}
+
+interface ExplainResult {
+  candidate: TokenId;
+  total: number;
+  bias: number;
+  termCount: number;
+  terms: ExplainTerm[];
 }
 
 interface ModelStats {
@@ -404,7 +448,7 @@ class PSAMNative implements TrainablePSAM {
   finalizeTraining(): void;
 
   predict(context: TokenId[], maxPredictions?: number): InferenceResult;
-  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainTerm[];
+  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainResult;
   sample(context: TokenId[], temperature?: number): TokenId;
 
   addLayer(layerId: string, overlay: PSAMNative, weight: number): void;
@@ -458,13 +502,21 @@ class ModelStats:
 
 @dataclass
 class ExplainTerm:
-    source_token: int
-    source_position: int
-    relative_offset: int
-    base_weight: float
-    idf_factor: float
-    distance_decay: float
+    source: int
+    offset: int
+    weight: float
+    idf: float
+    decay: float
     contribution: float
+
+
+@dataclass
+class ExplainResult:
+    candidate: int
+    total: float
+    bias: float
+    term_count: int
+    terms: List[ExplainTerm]
 ```
 
 ### Classes
@@ -497,8 +549,8 @@ class PSAM:
         context: List[int],
         candidate_token: int,
         max_terms: Optional[int] = None
-    ) -> List[ExplainTerm]:
-        """Explain why a token was predicted. Returns contributing terms."""
+    ) -> ExplainResult:
+        """Explain why a token was predicted. Returns scores and top terms."""
 
     def sample(self, context: List[int], temperature: float = 1.0) -> int:
         """Sample a single token from distribution"""

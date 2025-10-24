@@ -64,13 +64,22 @@ typedef struct {
  */
 typedef struct {
     uint32_t source_token;    /* Context token that contributed */
-    int32_t source_position;  /* Position of source token in context */
-    int32_t relative_offset;  /* Relative position (+/- offset) */
-    float base_weight;        /* Base association weight (PPMI-adjusted) */
-    float idf_factor;         /* IDF weighting factor */
-    float distance_decay;     /* Distance decay factor (exp(-α·|offset|)) */
-    float contribution;       /* Final contribution (weight × idf × decay) */
+    int16_t  rel_offset;      /* Relative position delta (e.g., -3 means three tokens back) */
+    float    weight_ppmi;     /* Base association weight (PPMI-adjusted) */
+    float    idf;             /* IDF weighting factor */
+    float    decay;           /* Distance decay factor */
+    float    contribution;    /* Final contribution (weight × idf × decay) */
 } psam_explain_term_t;
+
+/**
+ * Aggregate result metadata for an explanation request.
+ */
+typedef struct {
+    uint32_t candidate;       /* Token being explained */
+    float    total_score;     /* Final score used by the sampler (bias + contributions) */
+    float    bias_score;      /* Baseline bias score for the candidate */
+    int32_t  term_count;      /* Total number of contributing terms discovered */
+} psam_explain_result_t;
 
 /**
  * Training statistics for monitoring.
@@ -278,32 +287,38 @@ psam_error_t psam_predict_batch(
  * @param context Array of context token IDs
  * @param context_len Number of tokens in context
  * @param candidate_token Token ID to explain
- * @param out_terms Output buffer for explanation terms (caller-allocated)
- * @param max_terms Size of output buffer
- * @return Number of terms written (0 to max_terms), or negative error code
+ * @param out_terms Output buffer for explanation terms (caller-allocated, can be NULL if max_terms == 0)
+ * @param max_terms Size of output buffer (0 to probe required size)
+ * @param result   Metadata about the explanation (required)
+ * @return PSAM_OK on success, negative error code otherwise
  *
  * Example:
  *   uint32_t context[] = {10, 20, 30};
- *   psam_explain_term_t terms[32];
- *   int n = psam_explain(model, context, 3, 42, terms, 32);
- *   if (n > 0) {
- *     for (int i = 0; i < n; i++) {
- *       printf("  Token %u at pos %d (offset %+d): "
- *              "weight=%.3f × idf=%.3f × decay=%.3f = %.4f\n",
- *              terms[i].source_token, terms[i].source_position,
- *              terms[i].relative_offset, terms[i].base_weight,
- *              terms[i].idf_factor, terms[i].distance_decay,
+ *   psam_explain_term_t terms[16];
+ *   psam_explain_result_t info;
+ *   psam_error_t err = psam_explain(model, context, 3, 42, terms, 16, &info);
+ *   if (err == PSAM_OK) {
+ *     int written = (info.term_count < 16) ? info.term_count : 16;
+ *     for (int i = 0; i < written; i++) {
+ *       printf("  Token %u (offset %+d): weight=%.3f × idf=%.3f × decay=%.3f = %.4f\n",
+ *              terms[i].source_token, terms[i].rel_offset,
+ *              terms[i].weight_ppmi, terms[i].idf, terms[i].decay,
  *              terms[i].contribution);
  *     }
+ *     printf("Bias=%.4f ContributionSum=%.4f Total=%.4f\n",
+ *            info.bias_score, info.total_score - info.bias_score, info.total_score);
+ *   } else if (err == PSAM_OK && info.term_count > 16) {
+ *     // allocate a larger buffer (info.term_count entries) and call again
  *   }
  */
-int psam_explain(
+psam_error_t psam_explain(
     psam_model_t* model,
     const uint32_t* context,
     size_t context_len,
     uint32_t candidate_token,
     psam_explain_term_t* out_terms,
-    size_t max_terms
+    int max_terms,
+    psam_explain_result_t* result
 );
 
 /* ============================ Layer Composition ============================ */

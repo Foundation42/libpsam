@@ -78,19 +78,33 @@ export interface InferenceResult {
  */
 export interface ExplainTerm {
   /** Source token that contributed */
-  sourceToken: TokenId;
-  /** Position of source token in context */
-  sourcePosition: number;
-  /** Relative position offset */
-  relativeOffset: number;
+  source: TokenId;
+  /** Relative position delta (negative => token precedes candidate) */
+  offset: number;
   /** Base association weight (PPMI-adjusted) */
-  baseWeight: number;
+  weight: number;
   /** IDF weighting factor */
-  idfFactor: number;
+  idf: number;
   /** Distance decay factor */
-  distanceDecay: number;
+  decay: number;
   /** Final contribution (weight × idf × decay) */
   contribution: number;
+}
+
+/**
+ * Aggregated explanation metadata
+ */
+export interface ExplainResult {
+  /** Token being explained */
+  candidate: TokenId;
+  /** Final sampler score (bias + contributions) */
+  total: number;
+  /** Bias component for the candidate */
+  bias: number;
+  /** Total contributing terms discovered */
+  termCount: number;
+  /** Top contributing terms (length ≤ requested maxTerms) */
+  terms: ExplainTerm[];
 }
 
 /**
@@ -143,9 +157,9 @@ export interface PSAM {
 
   /**
    * Explain why a specific token was predicted for the given context.
-   * Returns the top contributing association terms with full traceability.
+   * Returns score metadata and the top contributing association terms.
    */
-  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainTerm[];
+  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainResult;
 
   /**
    * Sample a single token from the distribution

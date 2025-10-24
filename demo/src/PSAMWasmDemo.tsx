@@ -7,14 +7,19 @@ interface PSAMInstance {
   finalizeTraining(): void;
   predict(context: number[], maxPredictions?: number): { ids: number[]; scores: Float32Array };
   explain?(context: number[], candidateToken: number, maxTerms?: number): {
-    sourceToken: number;
-    sourcePosition: number;
-    relativeOffset: number;
-    baseWeight: number;
-    idfFactor: number;
-    distanceDecay: number;
-    contribution: number;
-  }[];
+    candidate: number;
+    total: number;
+    bias: number;
+    termCount: number;
+    terms: {
+      source: number;
+      offset: number;
+      weight: number;
+      idf: number;
+      decay: number;
+      contribution: number;
+    }[];
+  };
   sample(context: number[], temperature?: number): number;
   stats(): {
     vocabSize: number;
@@ -48,14 +53,16 @@ const PSAMWasmDemo = () => {
   const [predictions, setPredictions] = useState<{ token: number; word: string; score: number; probability: number }[]>([]);
   const [explanation, setExplanation] = useState<{
     token: string;
+    total: number;
+    bias: number;
+    termCount: number;
     terms: {
       sourceToken: number;
       sourceWord: string;
-      sourcePosition: number;
-      relativeOffset: number;
-      baseWeight: number;
-      idfFactor: number;
-      distanceDecay: number;
+      offset: number;
+      weight: number;
+      idf: number;
+      decay: number;
       contribution: number;
     }[];
   } | null>(null);
@@ -132,14 +139,16 @@ const PSAMWasmDemo = () => {
 
           setExplanation({
             token: preds[0].word,
-            terms: explainResult.map(term => ({
-              sourceToken: term.sourceToken,
-              sourceWord: vocab[term.sourceToken] || `<${term.sourceToken}>`,
-              sourcePosition: term.sourcePosition,
-              relativeOffset: term.relativeOffset,
-              baseWeight: term.baseWeight,
-              idfFactor: term.idfFactor,
-              distanceDecay: term.distanceDecay,
+            total: explainResult.total,
+            bias: explainResult.bias,
+            termCount: explainResult.termCount,
+            terms: explainResult.terms.map(term => ({
+              sourceToken: term.source,
+              sourceWord: vocab[term.source] || `<${term.source}>`,
+              offset: term.offset,
+              weight: term.weight,
+              idf: term.idf,
+              decay: term.decay,
               contribution: term.contribution,
             }))
           });
@@ -270,32 +279,56 @@ const PSAMWasmDemo = () => {
               const contextPtr = Module._malloc(contextArray.length * 4);
               Module.HEAPU32.set(contextArray, contextPtr / 4);
 
-              const termsPtr = Module._malloc(maxTerms * 28); // 28 bytes per term
+              const termsPtr = maxTerms > 0 ? Module._malloc(maxTerms * 24) : 0; // 24 bytes per term
+              const resultPtr = Module._malloc(16);
 
               const psam_explain = Module.cwrap('psam_explain', 'number',
-                ['number', 'number', 'number', 'number', 'number', 'number']);
-              const numTerms = psam_explain(handle, contextPtr, contextArray.length, candidateToken, termsPtr, maxTerms);
+                ['number', 'number', 'number', 'number', 'number', 'number', 'number']);
+              const err = psam_explain(handle, contextPtr, contextArray.length, candidateToken, termsPtr, maxTerms, resultPtr);
+
+              if (err < 0) {
+                Module._free(contextPtr);
+                if (termsPtr) Module._free(termsPtr);
+                Module._free(resultPtr);
+                throw new Error(`psam_explain failed with code ${err}`);
+              }
+
+              const base = resultPtr / 4;
+              const candidate = Module.HEAPU32[base];
+              const total = Module.HEAPF32[base + 1];
+              const bias = Module.HEAPF32[base + 2];
+              const termCount = Module.HEAP32[base + 3];
 
               const terms: any[] = [];
-              if (numTerms > 0) {
-                for (let i = 0; i < numTerms; i++) {
-                  const baseOffset = termsPtr / 4 + i * 7; // 7 fields per term
+
+              if (termsPtr && termCount > 0) {
+                const written = Math.min(termCount, maxTerms);
+                const view = new DataView(Module.HEAPU8.buffer, termsPtr, written * 24);
+
+                for (let i = 0; i < written; i++) {
+                  const offset = i * 24;
                   terms.push({
-                    sourceToken: Module.HEAPU32[baseOffset],
-                    sourcePosition: Module.HEAP32[baseOffset + 1],
-                    relativeOffset: Module.HEAP32[baseOffset + 2],
-                    baseWeight: Module.HEAPF32[baseOffset + 3],
-                    idfFactor: Module.HEAPF32[baseOffset + 4],
-                    distanceDecay: Module.HEAPF32[baseOffset + 5],
-                    contribution: Module.HEAPF32[baseOffset + 6],
+                    source: view.getUint32(offset, true),
+                    offset: view.getInt16(offset + 4, true),
+                    weight: view.getFloat32(offset + 8, true),
+                    idf: view.getFloat32(offset + 12, true),
+                    decay: view.getFloat32(offset + 16, true),
+                    contribution: view.getFloat32(offset + 20, true),
                   });
                 }
               }
 
               Module._free(contextPtr);
-              Module._free(termsPtr);
+              if (termsPtr) Module._free(termsPtr);
+              Module._free(resultPtr);
 
-              return terms;
+              return {
+                candidate,
+                total,
+                bias,
+                termCount,
+                terms,
+              };
             },
 
             sample: (context: number[], temperature = 1.0) => {
@@ -829,29 +862,28 @@ const PSAMWasmDemo = () => {
                     Why predict "{explanation.token}"?
                   </h4>
                   <div className="text-xs text-gray-600 mb-3">
-                    Top contributing associations (source → target):
+                    Bias {explanation.bias.toFixed(4)} + top {explanation.terms.length} / {explanation.termCount} contributions = total {explanation.total.toFixed(4)}
                   </div>
                   <div className="space-y-1.5 max-h-64 overflow-y-auto">
                     {explanation.terms.slice(0, 8).map((term, i) => (
                       <div key={i} className="font-mono text-xs bg-white p-2 rounded border border-amber-200">
                         <div className="flex items-center gap-2 mb-1">
                           <span className="text-indigo-600 font-semibold">"{term.sourceWord}"</span>
-                          <span className="text-gray-400">@pos {term.sourcePosition}</span>
-                          <span className="text-gray-400">(offset {term.relativeOffset > 0 ? '+' : ''}{term.relativeOffset})</span>
+                          <span className="text-gray-400">(offset {term.offset > 0 ? '+' : ''}{term.offset})</span>
                           <span className="text-green-600 ml-auto font-bold">
                             {term.contribution.toFixed(4)}
                           </span>
                         </div>
                         <div className="text-gray-500 text-[10px]">
-                          weight:{term.baseWeight.toFixed(3)} ×
-                          idf:{term.idfFactor.toFixed(3)} ×
-                          decay:{term.distanceDecay.toFixed(3)}
+                          weight:{term.weight.toFixed(3)} ×
+                          idf:{term.idf.toFixed(3)} ×
+                          decay:{term.decay.toFixed(3)}
                         </div>
                       </div>
                     ))}
                   </div>
                   <div className="mt-2 text-xs text-gray-500 italic">
-                    Total score is sum of all contributions from context tokens.
+                    Total score includes model bias plus all contributing terms.
                   </div>
                 </div>
               )}

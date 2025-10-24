@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <limits.h>
 
 /**
  * Compute IDF (Inverse Document Frequency) for a token.
@@ -240,15 +241,53 @@ static int compare_explain_terms(const void* a, const void* b) {
     return 0;
 }
 
-int psam_explain(
+static void maybe_record_explain_term(
+    psam_explain_term_t* buffer,
+    size_t* stored,
+    size_t capacity,
+    const psam_explain_term_t* term
+) {
+    if (capacity == 0) {
+        return;
+    }
+
+    if (*stored < capacity) {
+        buffer[*stored] = *term;
+        (*stored)++;
+        return;
+    }
+
+    /* Replace the smallest contribution if this term is stronger */
+    size_t min_idx = 0;
+    for (size_t i = 1; i < capacity; i++) {
+        if (buffer[i].contribution < buffer[min_idx].contribution) {
+            min_idx = i;
+        }
+    }
+
+    if (buffer[min_idx].contribution < term->contribution) {
+        buffer[min_idx] = *term;
+    }
+}
+
+psam_error_t psam_explain(
     psam_model_t* model,
     const uint32_t* context,
     size_t context_len,
     uint32_t candidate_token,
     psam_explain_term_t* out_terms,
-    size_t max_terms
+    int max_terms,
+    psam_explain_result_t* result
 ) {
-    if (!model || !context || !out_terms) {
+    if (!model || !context || !result) {
+        return PSAM_ERR_NULL_PARAM;
+    }
+
+    if (max_terms < 0) {
+        return PSAM_ERR_INVALID_CONFIG;
+    }
+
+    if (max_terms > 0 && !out_terms) {
         return PSAM_ERR_NULL_PARAM;
     }
 
@@ -256,28 +295,41 @@ int psam_explain(
         return PSAM_ERR_NOT_TRAINED;
     }
 
-    if (model->config.vocab_size == 0 || context_len == 0) {
-        return 0;  /* No explanation possible */
+    const uint32_t vocab_size = model->config.vocab_size;
+    const size_t capacity = max_terms > 0 ? (size_t)max_terms : 0;
+
+    if (candidate_token >= vocab_size) {
+        result->candidate = candidate_token;
+        result->bias_score = 0.0f;
+        result->total_score = 0.0f;
+        result->term_count = 0;
+        return PSAM_OK;
     }
 
-    if (candidate_token >= model->config.vocab_size) {
-        return 0;  /* Token out of vocabulary, no explanation */
+    if (vocab_size == 0 || context_len == 0) {
+        result->candidate = candidate_token;
+        result->bias_score = model->bias ? model->bias[candidate_token] : 0.0f;
+        result->total_score = result->bias_score;
+        result->term_count = 0;
+        return PSAM_OK;
     }
+
+    /* Initialize result in case we exit early */
+    result->candidate = candidate_token;
+    result->bias_score = 0.0f;
+    result->total_score = 0.0f;
+    result->term_count = 0;
 
     psam_lock_rdlock(&model->lock);
 
-    const uint32_t vocab_size = model->config.vocab_size;
-    int result = 0;
+    size_t stored_terms = 0;
+    size_t total_terms = 0;
+    float contribution_sum = 0.0f;
 
-    /* Allocate temporary buffer for all contributing terms */
-    size_t max_possible_terms = context_len * model->config.top_k;
-    psam_explain_term_t* all_terms = malloc(max_possible_terms * sizeof(psam_explain_term_t));
-    if (!all_terms) {
-        result = PSAM_ERR_OUT_OF_MEMORY;
-        goto cleanup;
+    if (model->bias) {
+        result->bias_score = model->bias[candidate_token];
+        result->total_score = result->bias_score;
     }
-
-    size_t term_count = 0;
 
     /* Process each context token to find contributions to candidate */
     if (model->csr && model->csr->row_count > 0) {
@@ -311,40 +363,40 @@ int psam_explain(
 
                 if (target == candidate_token) {
                     /* Found a contribution! */
-                    float weight = (float)model->csr->weights[edge] * row_scale;
-                    float contribution = idf * distance_decay * weight;
+                    float weight_ppmi = (float)model->csr->weights[edge] * row_scale;
+                    float contribution = idf * distance_decay * weight_ppmi;
 
-                    /* Store term */
-                    if (term_count < max_possible_terms) {
-                        all_terms[term_count].source_token = token;
-                        all_terms[term_count].source_position = (int32_t)i;
-                        all_terms[term_count].relative_offset = (int32_t)offset;
-                        all_terms[term_count].base_weight = weight;
-                        all_terms[term_count].idf_factor = idf;
-                        all_terms[term_count].distance_decay = distance_decay;
-                        all_terms[term_count].contribution = contribution;
-                        term_count++;
+                    psam_explain_term_t term;
+                    term.source_token = token;
+
+                    int32_t signed_offset = (int32_t)offset;
+                    if (signed_offset > INT16_MAX) {
+                        signed_offset = INT16_MAX;
                     }
+                    term.rel_offset = (int16_t)(-signed_offset);
+                    term.weight_ppmi = weight_ppmi;
+                    term.idf = idf;
+                    term.decay = distance_decay;
+                    term.contribution = contribution;
 
+                    maybe_record_explain_term(out_terms, &stored_terms, capacity, &term);
+
+                    total_terms++;
+                    contribution_sum += contribution;
                     break;  /* Found the target, move to next context token */
                 }
             }
         }
     }
 
-    /* Sort terms by contribution (descending) */
-    qsort(all_terms, term_count, sizeof(psam_explain_term_t), compare_explain_terms);
+    if (stored_terms > 1) {
+        qsort(out_terms, stored_terms, sizeof(psam_explain_term_t), compare_explain_terms);
+    }
 
-    /* Copy top terms to output */
-    size_t output_count = term_count < max_terms ? term_count : max_terms;
-    memcpy(out_terms, all_terms, output_count * sizeof(psam_explain_term_t));
+    result->term_count = (int32_t)total_terms;
+    result->total_score = result->bias_score + contribution_sum;
 
-    result = (int)output_count;
-
-    free(all_terms);
-
-cleanup:
     psam_lock_unlock_rd(&model->lock);
 
-    return result;
+    return PSAM_OK;
 }

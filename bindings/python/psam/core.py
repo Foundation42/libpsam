@@ -50,25 +50,42 @@ class PSAMPrediction(ctypes.Structure):
 class PSAMExplainTerm(ctypes.Structure):
     _fields_ = [
         ("source_token", ctypes.c_uint32),
-        ("source_position", ctypes.c_int32),
-        ("relative_offset", ctypes.c_int32),
-        ("base_weight", ctypes.c_float),
-        ("idf_factor", ctypes.c_float),
-        ("distance_decay", ctypes.c_float),
+        ("rel_offset", ctypes.c_int16),
+        ("weight_ppmi", ctypes.c_float),
+        ("idf", ctypes.c_float),
+        ("decay", ctypes.c_float),
         ("contribution", ctypes.c_float),
+    ]
+
+
+class PSAMExplainResult(ctypes.Structure):
+    _fields_ = [
+        ("candidate", ctypes.c_uint32),
+        ("total_score", ctypes.c_float),
+        ("bias_score", ctypes.c_float),
+        ("term_count", ctypes.c_int32),
     ]
 
 
 @dataclass
 class ExplainTerm:
     """Explanation term showing why a token was predicted"""
-    source_token: int
-    source_position: int
-    relative_offset: int
-    base_weight: float
-    idf_factor: float
-    distance_decay: float
+    source: int
+    offset: int
+    weight: float
+    idf: float
+    decay: float
     contribution: float
+
+
+@dataclass
+class ExplainResult:
+    """Full explanation response for a candidate token"""
+    candidate: int
+    total: float
+    bias: float
+    term_count: int
+    terms: List[ExplainTerm]
 
 
 class PSAMStatsStruct(ctypes.Structure):
@@ -182,7 +199,8 @@ def _configure_library(lib):
         ctypes.c_size_t,
         ctypes.c_uint32,
         ctypes.POINTER(PSAMExplainTerm),
-        ctypes.c_size_t,
+        ctypes.c_int32,
+        ctypes.POINTER(PSAMExplainResult),
     ]
     lib.psam_explain.restype = ctypes.c_int32
 
@@ -347,7 +365,7 @@ class PSAM:
 
     def explain(
         self, context: List[int], candidate_token: int, max_terms: Optional[int] = None
-    ) -> List[ExplainTerm]:
+    ) -> ExplainResult:
         """
         Explain why a specific token was predicted for the given context.
         Returns the top contributing association terms with full traceability.
@@ -358,32 +376,57 @@ class PSAM:
             max_terms: Maximum number of terms to return (default: 32)
 
         Returns:
-            List of ExplainTerm objects showing contributing factors
+            ExplainResult containing metadata and top contributing terms
         """
         limit = max_terms if max_terms is not None else 32
 
         context_array = (ctypes.c_uint32 * len(context))(*context)
-        terms = (PSAMExplainTerm * limit)()
+        result_info = PSAMExplainResult()
 
-        num_terms = self._lib.psam_explain(
-            self._handle, context_array, len(context), candidate_token, terms, limit
+        if limit > 0:
+            terms_buffer = (PSAMExplainTerm * limit)()
+            terms_ptr = terms_buffer
+        else:
+            terms_buffer = None
+            terms_ptr = None
+
+        err = self._lib.psam_explain(
+            self._handle,
+            context_array,
+            len(context),
+            candidate_token,
+            terms_ptr,
+            limit,
+            ctypes.byref(result_info),
         )
 
-        if num_terms < 0:
-            _check_error(num_terms, "explain")
+        if err != PSAMErrorCode.OK:
+            _check_error(err, "explain")
 
-        return [
-            ExplainTerm(
-                source_token=terms[i].source_token,
-                source_position=terms[i].source_position,
-                relative_offset=terms[i].relative_offset,
-                base_weight=terms[i].base_weight,
-                idf_factor=terms[i].idf_factor,
-                distance_decay=terms[i].distance_decay,
-                contribution=terms[i].contribution,
-            )
-            for i in range(num_terms)
-        ]
+        top_count = min(result_info.term_count, limit) if limit > 0 else 0
+        terms: List[ExplainTerm] = []
+
+        if top_count > 0 and terms_buffer is not None:
+            for i in range(top_count):
+                term = terms_buffer[i]
+                terms.append(
+                    ExplainTerm(
+                        source=term.source_token,
+                        offset=int(term.rel_offset),
+                        weight=term.weight_ppmi,
+                        idf=term.idf,
+                        decay=term.decay,
+                        contribution=term.contribution,
+                    )
+                )
+
+        return ExplainResult(
+            candidate=result_info.candidate,
+            total=result_info.total_score,
+            bias=result_info.bias_score,
+            term_count=result_info.term_count,
+            terms=terms,
+        )
 
     def sample(self, context: List[int], temperature: float = 1.0) -> int:
         """

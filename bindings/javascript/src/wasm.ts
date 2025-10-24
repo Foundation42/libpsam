@@ -4,7 +4,7 @@
  * Provides browser-compatible PSAM using WebAssembly
  */
 
-import type { TokenId, InferenceResult, ModelStats, TrainablePSAM, PersistenceOptions, ExplainTerm } from './types.js';
+import type { TokenId, InferenceResult, ModelStats, TrainablePSAM, PersistenceOptions, ExplainTerm, ExplainResult } from './types.js';
 
 // Type for the Emscripten module
 interface EmscriptenModule {
@@ -13,10 +13,14 @@ interface EmscriptenModule {
   HEAPU32: Uint32Array;
   HEAP32: Int32Array;
   HEAPF32: Float32Array;
+  HEAPU8: Uint8Array;
   cwrap: (name: string, returnType: string | null, argTypes: string[]) => Function;
   ccall: (name: string, returnType: string | null, argTypes: string[], args: any[]) => any;
   UTF8ToString(ptr: number): string;
 }
+
+const EXPLAIN_TERM_SIZE = 24;
+const EXPLAIN_RESULT_SIZE = 16;
 
 // Singleton WASM module instance
 let wasmModuleInstance: EmscriptenModule | null = null;
@@ -165,47 +169,72 @@ export class PSAMWASM implements TrainablePSAM {
     return { ids, scores: new Float32Array(scoresArray) };
   }
 
-  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainTerm[] {
+  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainResult {
     const contextArray = new Uint32Array(context);
-    const maxT = maxTerms || 32;
+    const maxT = maxTerms ?? 32;
 
-    // Allocate memory for context
     const contextPtr = this.module._malloc(contextArray.length * 4);
     this.module.HEAPU32.set(contextArray, contextPtr / 4);
 
-    // Allocate memory for explanation terms (28 bytes per term)
-    // struct layout: uint32 source_token, int32 source_pos, int32 rel_offset,
-    //                float base_weight, float idf_factor, float distance_decay, float contribution
-    const termsPtr = this.module._malloc(maxT * 28);
+    const termsPtr = maxT > 0 ? this.module._malloc(maxT * EXPLAIN_TERM_SIZE) : 0;
+    const resultPtr = this.module._malloc(EXPLAIN_RESULT_SIZE);
 
-    // Call psam_explain
     const psam_explain = this.module.cwrap('psam_explain', 'number',
-      ['number', 'number', 'number', 'number', 'number', 'number']);
-    const numTerms = psam_explain(this.handle, contextPtr, contextArray.length, candidateToken, termsPtr, maxT);
+      ['number', 'number', 'number', 'number', 'number', 'number', 'number']);
 
-    // Read explanation terms
+    const err = psam_explain(
+      this.handle,
+      contextPtr,
+      contextArray.length,
+      candidateToken,
+      termsPtr,
+      maxT,
+      resultPtr,
+    );
+
+    if (err < 0) {
+      this.module._free(contextPtr);
+      if (termsPtr) this.module._free(termsPtr);
+      this.module._free(resultPtr);
+      throw new Error(`psam_explain failed with code ${err}`);
+    }
+
+    const baseIndex = resultPtr / 4;
+    const candidate = this.module.HEAPU32[baseIndex];
+    const total = this.module.HEAPF32[baseIndex + 1];
+    const bias = this.module.HEAPF32[baseIndex + 2];
+    const termCount = this.module.HEAP32[baseIndex + 3];
+
     const terms: ExplainTerm[] = [];
 
-    if (numTerms > 0) {
-      for (let i = 0; i < numTerms; i++) {
-        const baseOffset = termsPtr / 4 + i * 7; // 7 fields per term
+    if (termsPtr && termCount > 0) {
+      const written = Math.min(termCount, maxT);
+      const view = new DataView(this.module.HEAPU8.buffer, termsPtr, written * EXPLAIN_TERM_SIZE);
+
+      for (let i = 0; i < written; i++) {
+        const base = i * EXPLAIN_TERM_SIZE;
         terms.push({
-          sourceToken: this.module.HEAPU32[baseOffset],
-          sourcePosition: this.module.HEAP32[baseOffset + 1],
-          relativeOffset: this.module.HEAP32[baseOffset + 2],
-          baseWeight: this.module.HEAPF32[baseOffset + 3],
-          idfFactor: this.module.HEAPF32[baseOffset + 4],
-          distanceDecay: this.module.HEAPF32[baseOffset + 5],
-          contribution: this.module.HEAPF32[baseOffset + 6],
+          source: view.getUint32(base, true),
+          offset: view.getInt16(base + 4, true),
+          weight: view.getFloat32(base + 8, true),
+          idf: view.getFloat32(base + 12, true),
+          decay: view.getFloat32(base + 16, true),
+          contribution: view.getFloat32(base + 20, true),
         });
       }
     }
 
-    // Free memory
     this.module._free(contextPtr);
-    this.module._free(termsPtr);
+    if (termsPtr) this.module._free(termsPtr);
+    this.module._free(resultPtr);
 
-    return terms;
+    return {
+      candidate,
+      total,
+      bias,
+      termCount,
+      terms,
+    };
   }
 
   sample(context: TokenId[], temperature: number = 1.0): TokenId {
