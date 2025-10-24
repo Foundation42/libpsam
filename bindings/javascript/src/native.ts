@@ -4,7 +4,7 @@
  * Supports both Bun (bun:ffi) and Node.js (via dynamic detection)
  */
 
-import type { TokenId, InferenceResult, ModelStats, TrainablePSAM, PersistenceOptions } from './types.js';
+import type { TokenId, InferenceResult, ModelStats, TrainablePSAM, PersistenceOptions, ExplainTerm } from './types.js';
 
 // Platform-specific FFI loading
 let FFI: any = null;
@@ -49,6 +49,7 @@ function checkError(code: number, operation: string, lib: any): void {
 
 const PREDICTION_SIZE = 12; // sizeof(psam_prediction_t)
 const STATS_SIZE = 32; // sizeof(psam_stats_t)
+const EXPLAIN_TERM_SIZE = 28; // sizeof(psam_explain_term_t)
 
 let cachedLib: any = null;
 
@@ -73,6 +74,10 @@ function loadLibrary(libraryPath?: string): any {
         args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
         returns: FFIType.i32,
       },
+      psam_explain: {
+        args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u32, FFIType.ptr, FFIType.u64],
+        returns: FFIType.i32,
+      },
       psam_add_layer: { args: [FFIType.ptr, FFIType.cstring, FFIType.ptr, FFIType.f32], returns: FFIType.i32 },
       psam_remove_layer: { args: [FFIType.ptr, FFIType.cstring], returns: FFIType.i32 },
       psam_update_layer_weight: { args: [FFIType.ptr, FFIType.cstring, FFIType.f32], returns: FFIType.i32 },
@@ -92,6 +97,7 @@ function loadLibrary(libraryPath?: string): any {
       psam_train_batch: ['int32', ['pointer', 'pointer', 'uint64']],
       psam_finalize_training: ['int32', ['pointer']],
       psam_predict: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'uint64']],
+      psam_explain: ['int32', ['pointer', 'pointer', 'uint64', 'uint32', 'pointer', 'uint64']],
       psam_add_layer: ['int32', ['pointer', 'string', 'pointer', 'float']],
       psam_remove_layer: ['int32', ['pointer', 'string']],
       psam_update_layer_weight: ['int32', ['pointer', 'string', 'float']],
@@ -207,6 +213,45 @@ export class PSAMNative implements TrainablePSAM {
     }
 
     return { ids, scores };
+  }
+
+  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainTerm[] {
+    const symbols = this.lib.symbols || this.lib;
+    const limit = maxTerms ?? 32;
+
+    const outBuffer = new Uint8Array(limit * EXPLAIN_TERM_SIZE);
+    const contextArray = new Uint32Array(context);
+
+    const numTerms = symbols.psam_explain(
+      this.handle,
+      contextArray,
+      BigInt(contextArray.length),
+      candidateToken,
+      outBuffer,
+      BigInt(limit)
+    );
+
+    if (numTerms < 0) {
+      checkError(numTerms, 'explain', this.lib);
+    }
+
+    const terms: ExplainTerm[] = [];
+    const view = new DataView(outBuffer.buffer);
+
+    for (let i = 0; i < numTerms; i++) {
+      const offset = i * EXPLAIN_TERM_SIZE;
+      terms.push({
+        sourceToken: view.getUint32(offset, true),
+        sourcePosition: view.getInt32(offset + 4, true),
+        relativeOffset: view.getInt32(offset + 8, true),
+        baseWeight: view.getFloat32(offset + 12, true),
+        idfFactor: view.getFloat32(offset + 16, true),
+        distanceDecay: view.getFloat32(offset + 20, true),
+        contribution: view.getFloat32(offset + 24, true),
+      });
+    }
+
+    return terms;
   }
 
   sample(context: TokenId[], temperature: number = 1.0): TokenId {

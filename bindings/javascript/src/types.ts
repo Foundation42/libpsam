@@ -74,6 +74,26 @@ export interface InferenceResult {
 }
 
 /**
+ * Explanation term showing why a token was predicted
+ */
+export interface ExplainTerm {
+  /** Source token that contributed */
+  sourceToken: TokenId;
+  /** Position of source token in context */
+  sourcePosition: number;
+  /** Relative position offset */
+  relativeOffset: number;
+  /** Base association weight (PPMI-adjusted) */
+  baseWeight: number;
+  /** IDF weighting factor */
+  idfFactor: number;
+  /** Distance decay factor */
+  distanceDecay: number;
+  /** Final contribution (weight × idf × decay) */
+  contribution: number;
+}
+
+/**
  * Model statistics
  */
 export interface ModelStats {
@@ -120,6 +140,12 @@ export interface PSAM {
    * Predict next tokens given context
    */
   predict(context: TokenId[], maxPredictions?: number): InferenceResult;
+
+  /**
+   * Explain why a specific token was predicted for the given context.
+   * Returns the top contributing association terms with full traceability.
+   */
+  explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainTerm[];
 
   /**
    * Sample a single token from the distribution

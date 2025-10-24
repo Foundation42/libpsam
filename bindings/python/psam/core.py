@@ -47,6 +47,30 @@ class PSAMPrediction(ctypes.Structure):
     ]
 
 
+class PSAMExplainTerm(ctypes.Structure):
+    _fields_ = [
+        ("source_token", ctypes.c_uint32),
+        ("source_position", ctypes.c_int32),
+        ("relative_offset", ctypes.c_int32),
+        ("base_weight", ctypes.c_float),
+        ("idf_factor", ctypes.c_float),
+        ("distance_decay", ctypes.c_float),
+        ("contribution", ctypes.c_float),
+    ]
+
+
+@dataclass
+class ExplainTerm:
+    """Explanation term showing why a token was predicted"""
+    source_token: int
+    source_position: int
+    relative_offset: int
+    base_weight: float
+    idf_factor: float
+    distance_decay: float
+    contribution: float
+
+
 class PSAMStatsStruct(ctypes.Structure):
     _fields_ = [
         ("vocab_size", ctypes.c_uint32),
@@ -151,6 +175,16 @@ def _configure_library(lib):
         ctypes.c_size_t,
     ]
     lib.psam_predict.restype = ctypes.c_int32
+
+    lib.psam_explain.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.POINTER(PSAMExplainTerm),
+        ctypes.c_size_t,
+    ]
+    lib.psam_explain.restype = ctypes.c_int32
 
     # Layer composition
     lib.psam_add_layer.argtypes = [
@@ -310,6 +344,46 @@ class PSAM:
         scores = np.array([predictions[i].score for i in range(num_preds)], dtype=np.float32)
 
         return token_ids, scores
+
+    def explain(
+        self, context: List[int], candidate_token: int, max_terms: Optional[int] = None
+    ) -> List[ExplainTerm]:
+        """
+        Explain why a specific token was predicted for the given context.
+        Returns the top contributing association terms with full traceability.
+
+        Args:
+            context: List of token IDs representing the context
+            candidate_token: Token ID to explain
+            max_terms: Maximum number of terms to return (default: 32)
+
+        Returns:
+            List of ExplainTerm objects showing contributing factors
+        """
+        limit = max_terms if max_terms is not None else 32
+
+        context_array = (ctypes.c_uint32 * len(context))(*context)
+        terms = (PSAMExplainTerm * limit)()
+
+        num_terms = self._lib.psam_explain(
+            self._handle, context_array, len(context), candidate_token, terms, limit
+        )
+
+        if num_terms < 0:
+            _check_error(num_terms, "explain")
+
+        return [
+            ExplainTerm(
+                source_token=terms[i].source_token,
+                source_position=terms[i].source_position,
+                relative_offset=terms[i].relative_offset,
+                base_weight=terms[i].base_weight,
+                idf_factor=terms[i].idf_factor,
+                distance_decay=terms[i].distance_decay,
+                contribution=terms[i].contribution,
+            )
+            for i in range(num_terms)
+        ]
 
     def sample(self, context: List[int], temperature: float = 1.0) -> int:
         """
