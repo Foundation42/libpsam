@@ -293,7 +293,7 @@ const PSAMWasmDemo = () => {
                 throw new Error(`psam_explain failed with code ${err}`);
               }
 
-              const base = resultPtr / 4;
+              const base = resultPtr >>> 2;
               const candidate = Module.HEAPU32[base];
               const total = Module.HEAPF32[base + 1];
               const bias = Module.HEAPF32[base + 2];

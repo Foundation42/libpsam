@@ -199,7 +199,7 @@ export class PSAMWASM implements TrainablePSAM {
       throw new Error(`psam_explain failed with code ${err}`);
     }
 
-    const baseIndex = resultPtr / 4;
+    const baseIndex = resultPtr >>> 2;
     const candidate = this.module.HEAPU32[baseIndex];
     const total = this.module.HEAPF32[baseIndex + 1];
     const bias = this.module.HEAPF32[baseIndex + 2];
