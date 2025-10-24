@@ -82,12 +82,20 @@ typedef struct {
 } psamc_model_ref_t;
 
 typedef struct {
+    char label[64];         // Human-readable dataset title
+    char uri[256];          // Where the dataset lives
+    char license[128];      // License / usage terms
+} psamc_source_t;
+
+typedef struct {
     uint32_t num_references;    // Number of external model references
     psamc_model_ref_t* refs;    // Array of references
-    sha256_hash_t self_hash;    // Hash of this composite (excluding this field)
+    sha256_hash_t self_hash;    // Hash of this composite (excluding self_hash bytes)
     sha256_hash_t source_hash;  // Hash of training data source
     uint64_t created_timestamp; // Unix timestamp
-    char created_by[128];       // Creator/tool identification
+    char created_by[PSAMC_CREATED_BY_MAX]; // Creator/tool identification
+    uint32_t source_count;      // Optional dataset metadata entries
+    psamc_source_t* sources;    // Array of dataset metadata entries
 } psamc_manifest_t;
 ```
 
@@ -113,6 +121,7 @@ Model ID: medical-specialty-2024
 Created By: psam-trainer v1.2.3 (john@example.com)
 Created: 2025-10-24 14:30:00 UTC
 Source Hash: b4e6c3d2... (training corpus SHA-256)
+Dataset Source: training-corpus (s3://datasets/corpus-v1, CC-BY-4.0)
 ```
 
 ## Config Section
@@ -197,10 +206,20 @@ psamc_model_ref_t medical_ref = {
 // Compute SHA-256 of external model
 psamc_sha256_file(medical_ref.url, &medical_ref.sha256);
 
+psamc_source_t sources[] = {
+    {
+        .label = "medical-corpus",
+        .uri = "s3://datasets/medical-v2",
+        .license = "CC-BY-4.0"
+    }
+};
+
 // Create manifest with provenance tracking
 psamc_manifest_t manifest = {
     .num_references = 1,
     .refs = &medical_ref,
+    .source_count = 1,
+    .sources = sources,
     .created_timestamp = (uint64_t)time(NULL),
     .created_by = "psam-trainer v1.0.0 (john@example.com)"
 };
@@ -216,11 +235,13 @@ psamc_save("my_composite.psamc", base_model, &config, &manifest);
 
 ```c
 // Load with integrity checking
-void* model = psamc_load("my_composite.psamc", true);  // verify=true
+psamc_composite_t* composite = psamc_load("my_composite.psamc", true);
 
-if (!model) {
-    // Verification failed - SHA-256 mismatch or size mismatch
+if (!composite) {
     fprintf(stderr, "Integrity check failed!\n");
+} else {
+    // Inspect composite->hyperparams / composite->manifest
+    psamc_free(composite);
 }
 ```
 

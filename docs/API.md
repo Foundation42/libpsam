@@ -136,6 +136,22 @@ void psam_destroy(psam_model_t* model);
 
 Destroy model and free all resources. Safe to call with NULL.
 
+##### `psam_get_provenance`
+
+```c
+psam_error_t psam_get_provenance(const psam_model_t* model, psam_provenance_t* out_provenance);
+```
+
+Retrieve provenance metadata (creation timestamp, creator string, dataset hash) stored with the model.
+
+##### `psam_set_provenance`
+
+```c
+psam_error_t psam_set_provenance(psam_model_t* model, const psam_provenance_t* provenance);
+```
+
+Override provenance metadata before calling `psam_save()`.
+
 #### Training
 
 ##### `psam_train_token`
@@ -303,7 +319,7 @@ List active layer IDs.
 psam_error_t psam_save(const psam_model_t* model, const char* path);
 ```
 
-Save model to binary file.
+Save model to binary file. Persists provenance metadata (timestamp, creator, dataset hash) along with hyperparameters so the run can be exactly replayed later.
 
 ##### `psam_load`
 
@@ -700,6 +716,7 @@ base.add_layer("legal", legal_model, weight=2.0)
 
 Binary format for individual models:
 - Magic number + version
+- Provenance metadata (timestamp, creator, dataset hash)
 - Configuration (vocab size, window, hyperparameters)
 - CSR sparse matrix
 - Bias, IDF, unigram counts
@@ -712,22 +729,53 @@ Extensible format for model composition with integrity verification (C API only 
 
 ```c
 #include <psam_composite.h>
+#include <sys/stat.h>
 
 // Create composite with hyperparameters and manifest
 psamc_hyperparams_t config = PSAMC_PRESET_BALANCED_CONFIG;
 config.alpha = 0.12;  // Custom tweak
 
+psamc_model_ref_t refs[] = {
+    {
+        .url = "./models/base.psam",
+        .size = 0,  // filled after hashing
+    }
+};
+
+psamc_source_t sources[] = {
+    {
+        .label = "training-corpus",
+        .uri = "s3://datasets/corpus-v1",
+        .license = "CC-BY-4.0"
+    }
+};
+
 psamc_manifest_t manifest = {
+    .num_references = 1,
+    .refs = refs,
+    .source_count = 1,
+    .sources = sources,
     .created_timestamp = time(NULL),
     .created_by = "my-trainer v1.0.0",
-    // ... external model references with SHA-256 hashes
 };
 
 psamc_sha256_file("training_data.txt", &manifest.source_hash);
+psamc_sha256_file(refs[0].url, &refs[0].sha256);
+#ifdef _POSIX_VERSION
+struct stat st;
+if (stat(refs[0].url, &st) == 0) {
+    refs[0].size = (uint64_t)st.st_size;
+}
+#endif
+
 psamc_save("model.psamc", base_model, &config, &manifest);
 
 // Load with integrity verification
-void* model = psamc_load("model.psamc", true);  // verify=true
+psamc_composite_t* composite = psamc_load("model.psamc", true);
+if (composite) {
+    // Access composite->hyperparams / composite->manifest
+    psamc_free(composite);
+}
 ```
 
 **Features:**
@@ -736,6 +784,7 @@ void* model = psamc_load("model.psamc", true);  // verify=true
 - Provenance tracking (creator, timestamp, source hash)
 - Preset configurations (FAST, BALANCED, ACCURATE, TINY)
 - External references with semver version checking
+- Optional dataset/source metadata (`meta.sources[]`)
 - Layer composition for domain adaptation
 
 See **[.psamc Format Specification](./PSAMC_FORMAT.md)** for complete details.

@@ -7,6 +7,8 @@
 #include "../psam_internal.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <time.h>
 
 /* ============================ Default Configuration ============================ */
 
@@ -67,6 +69,16 @@ psam_model_t* psam_create_with_config(const psam_config_t* config) {
     model->csr = NULL;
     model->training_data = NULL;
     model->layers = NULL;
+
+    /* Default provenance */
+    model->provenance.created_timestamp = (uint64_t)time(NULL);
+    snprintf(
+        model->provenance.created_by,
+        PSAM_CREATED_BY_MAX,
+        "libpsam/%s",
+        psam_version()
+    );
+    memset(model->provenance.source_hash, 0, PSAM_SOURCE_HASH_SIZE);
 
     return model;
 }
@@ -139,6 +151,31 @@ psam_error_t psam_get_stats(const psam_model_t* model, psam_stats_t* out_stats) 
     }
 
     psam_lock_unlock_rd((psam_lock_t*)&model->lock);
+
+    return PSAM_OK;
+}
+
+psam_error_t psam_get_provenance(const psam_model_t* model, psam_provenance_t* out_provenance) {
+    if (!model || !out_provenance) {
+        return PSAM_ERR_NULL_PARAM;
+    }
+
+    psam_lock_rdlock((psam_lock_t*)&model->lock);
+    *out_provenance = model->provenance;
+    psam_lock_unlock_rd((psam_lock_t*)&model->lock);
+
+    return PSAM_OK;
+}
+
+psam_error_t psam_set_provenance(psam_model_t* model, const psam_provenance_t* provenance) {
+    if (!model || !provenance) {
+        return PSAM_ERR_NULL_PARAM;
+    }
+
+    psam_lock_wrlock(&model->lock);
+    model->provenance = *provenance;
+    model->provenance.created_by[PSAM_CREATED_BY_MAX - 1] = '\0';
+    psam_lock_unlock_wr(&model->lock);
 
     return PSAM_OK;
 }

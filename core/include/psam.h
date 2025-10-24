@@ -50,6 +50,19 @@ typedef struct {
 } psam_config_t;
 
 /**
+ * Provenance metadata stored with serialized models (.psam/.psamc).
+ * Enables exact replay and audit of training sources.
+ */
+#define PSAM_CREATED_BY_MAX 128
+#define PSAM_SOURCE_HASH_SIZE 32
+
+typedef struct {
+    uint64_t created_timestamp;                /* Unix timestamp of model creation */
+    char created_by[PSAM_CREATED_BY_MAX];      /* Tool/user identifier */
+    uint8_t source_hash[PSAM_SOURCE_HASH_SIZE];/* SHA-256 of training data (optional) */
+} psam_provenance_t;
+
+/**
  * Single prediction result with token ID, raw score, and calibrated probability.
  */
 typedef struct {
@@ -157,6 +170,25 @@ psam_model_t* psam_create_with_config(const psam_config_t* config);
  *   model = NULL;
  */
 void psam_destroy(psam_model_t* model);
+
+/**
+ * Get provenance metadata for a model (thread-safe).
+ *
+ * @param model Model handle
+ * @param out_provenance Output structure to populate
+ * @return PSAM_OK on success, error code otherwise
+ */
+psam_error_t psam_get_provenance(const psam_model_t* model, psam_provenance_t* out_provenance);
+
+/**
+ * Set provenance metadata for a model (thread-safe).
+ * Call before psam_save() to embed metadata in the file header.
+ *
+ * @param model Model handle
+ * @param provenance Provenance data to store
+ * @return PSAM_OK on success, error code otherwise
+ */
+psam_error_t psam_set_provenance(psam_model_t* model, const psam_provenance_t* provenance);
 
 /* ============================ Training ============================ */
 

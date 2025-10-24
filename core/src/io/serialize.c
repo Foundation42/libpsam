@@ -3,7 +3,8 @@
  *
  * File format (compatible with TypeScript io/serialize.ts):
  * - Magic number (4 bytes): "PSAM"
- * - Version (4 bytes): 1
+ * - Version (4 bytes): 2
+ * - Provenance metadata (timestamp, created_by, source_hash)
  * - Config section
  * - Vocabulary section (optional)
  * - CSR section (row_offsets, targets, weights, row_scales)
@@ -19,7 +20,7 @@
 #include <string.h>
 
 #define PSAM_MAGIC 0x4D415350  /* "PSAM" in little-endian */
-#define PSAM_VERSION 1
+#define PSAM_VERSION 2
 
 /* ============================ Serialization ============================ */
 
@@ -48,7 +49,28 @@ psam_error_t psam_save(const psam_model_t* model, const char* path) {
         goto cleanup;
     }
 
-    /* 2. Write config */
+    /* 2. Write provenance metadata */
+    uint64_t created_timestamp = model->provenance.created_timestamp;
+    if (fwrite(&created_timestamp, sizeof(uint64_t), 1, f) != 1) {
+        result = PSAM_ERR_IO;
+        goto cleanup;
+    }
+
+    char created_by_buffer[PSAM_CREATED_BY_MAX] = {0};
+    if (model->provenance.created_by[0] != '\0') {
+        snprintf(created_by_buffer, PSAM_CREATED_BY_MAX, "%s", model->provenance.created_by);
+    }
+    if (fwrite(created_by_buffer, sizeof(char), PSAM_CREATED_BY_MAX, f) != PSAM_CREATED_BY_MAX) {
+        result = PSAM_ERR_IO;
+        goto cleanup;
+    }
+
+    if (fwrite(model->provenance.source_hash, sizeof(uint8_t), PSAM_SOURCE_HASH_SIZE, f) != PSAM_SOURCE_HASH_SIZE) {
+        result = PSAM_ERR_IO;
+        goto cleanup;
+    }
+
+    /* 3. Write config */
     if (fwrite(&model->config.vocab_size, sizeof(uint32_t), 1, f) != 1 ||
         fwrite(&model->config.window, sizeof(uint32_t), 1, f) != 1 ||
         fwrite(&model->config.top_k, sizeof(uint32_t), 1, f) != 1 ||
@@ -61,13 +83,13 @@ psam_error_t psam_save(const psam_model_t* model, const char* path) {
         goto cleanup;
     }
 
-    /* 3. Write model metadata */
+    /* 4. Write model metadata */
     if (fwrite(&model->total_tokens, sizeof(uint64_t), 1, f) != 1) {
         result = PSAM_ERR_IO;
         goto cleanup;
     }
 
-    /* 4. Write CSR dimensions */
+    /* 5. Write CSR dimensions */
     uint32_t row_count = model->csr ? model->csr->row_count : 0;
     uint64_t edge_count = model->csr ? model->csr->edge_count : 0;
 
@@ -77,7 +99,7 @@ psam_error_t psam_save(const psam_model_t* model, const char* path) {
         goto cleanup;
     }
 
-    /* 5. Write CSR arrays (if present) */
+    /* 6. Write CSR arrays (if present) */
     if (model->csr && row_count > 0 && edge_count > 0) {
         /* Row offsets: row_count + 1 elements */
         if (fwrite(model->csr->row_offsets, sizeof(uint32_t), row_count + 1, f) != row_count + 1) {
@@ -104,19 +126,19 @@ psam_error_t psam_save(const psam_model_t* model, const char* path) {
         }
     }
 
-    /* 6. Write bias array */
+    /* 7. Write bias array */
     if (fwrite(model->bias, sizeof(float), model->config.vocab_size, f) != model->config.vocab_size) {
         result = PSAM_ERR_IO;
         goto cleanup;
     }
 
-    /* 7. Write unigram counts */
+    /* 8. Write unigram counts */
     if (fwrite(model->unigram_counts, sizeof(uint32_t), model->config.vocab_size, f) != model->config.vocab_size) {
         result = PSAM_ERR_IO;
         goto cleanup;
     }
 
-    /* 8. Write row descriptor count and descriptors */
+    /* 9. Write row descriptor count and descriptors */
     if (fwrite(&model->row_descriptor_count, sizeof(uint32_t), 1, f) != 1) {
         result = PSAM_ERR_IO;
         goto cleanup;
@@ -158,11 +180,36 @@ psam_model_t* psam_load(const char* path) {
         goto error;  /* Invalid file format */
     }
 
-    if (version != PSAM_VERSION) {
+    if (version < 1 || version > PSAM_VERSION) {
         goto error;  /* Unsupported version */
     }
 
-    /* 2. Read config */
+    /* 2. Read provenance metadata (version >= 2) */
+    psam_provenance_t provenance;
+    memset(&provenance, 0, sizeof(provenance));
+
+    if (version >= 2) {
+        if (fread(&provenance.created_timestamp, sizeof(uint64_t), 1, f) != 1) {
+            goto error;
+        }
+
+        char created_by_raw[PSAM_CREATED_BY_MAX];
+        if (fread(created_by_raw, sizeof(char), PSAM_CREATED_BY_MAX, f) != PSAM_CREATED_BY_MAX) {
+            goto error;
+        }
+        memcpy(provenance.created_by, created_by_raw, PSAM_CREATED_BY_MAX);
+        provenance.created_by[PSAM_CREATED_BY_MAX - 1] = '\0';
+
+        if (fread(provenance.source_hash, sizeof(uint8_t), PSAM_SOURCE_HASH_SIZE, f) != PSAM_SOURCE_HASH_SIZE) {
+            goto error;
+        }
+    } else {
+        provenance.created_timestamp = 0;
+        strncpy(provenance.created_by, "legacy-psam", PSAM_CREATED_BY_MAX - 1);
+        memset(provenance.source_hash, 0, PSAM_SOURCE_HASH_SIZE);
+    }
+
+    /* 3. Read config */
     psam_config_t config;
     memset(&config, 0, sizeof(config));
 
@@ -177,18 +224,23 @@ psam_model_t* psam_load(const char* path) {
         goto error;
     }
 
-    /* 3. Create model with loaded config */
+    /* 4. Create model with loaded config */
     model = psam_create_with_config(&config);
     if (!model) {
         goto error;
     }
 
-    /* 4. Read model metadata */
+    /* Apply provenance */
+    psam_lock_wrlock(&model->lock);
+    model->provenance = provenance;
+    psam_lock_unlock_wr(&model->lock);
+
+    /* 5. Read model metadata */
     if (fread(&model->total_tokens, sizeof(uint64_t), 1, f) != 1) {
         goto error;
     }
 
-    /* 5. Read CSR dimensions */
+    /* 6. Read CSR dimensions */
     uint32_t row_count;
     uint64_t edge_count;
 
@@ -197,7 +249,7 @@ psam_model_t* psam_load(const char* path) {
         goto error;
     }
 
-    /* 6. Read CSR arrays (if present) */
+    /* 7. Read CSR arrays (if present) */
     if (row_count > 0 && edge_count > 0) {
         csr = calloc(1, sizeof(csr_storage_t));
         if (!csr) {

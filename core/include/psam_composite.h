@@ -34,6 +34,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+typedef struct psam_model psam_model_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -49,6 +51,15 @@ extern "C" {
 #define PSAMC_FLAG_ENCRYPTED     (1 << 1)  /* Model data is encrypted (reserved) */
 #define PSAMC_FLAG_QUANTIZED     (1 << 2)  /* Weights are quantized (reserved) */
 #define PSAMC_FLAG_HAS_MANIFEST  (1 << 3)  /* Has integrity manifest */
+
+/* String/field size limits */
+#define PSAMC_MAX_URL_LENGTH     256
+#define PSAMC_MAX_MODEL_ID       64
+#define PSAMC_CREATED_BY_MAX     128
+#define PSAMC_SOURCE_HASH_SIZE   32
+#define PSAMC_SOURCE_LABEL_MAX   64
+#define PSAMC_SOURCE_URI_MAX     256
+#define PSAMC_SOURCE_LICENSE_MAX 128
 
 /* Section types */
 typedef enum {
@@ -81,7 +92,7 @@ typedef struct {
 
 /* SHA-256 hash */
 typedef struct {
-    uint8_t hash[32];       /* 256 bits */
+    uint8_t hash[PSAMC_SOURCE_HASH_SIZE];       /* 256 bits */
 } sha256_hash_t;
 
 /* Semantic version */
@@ -94,12 +105,12 @@ typedef struct {
 
 /* Model reference (for external models) */
 typedef struct {
-    char url[256];          /* URL or path to external model */
-    sha256_hash_t sha256;   /* Expected SHA-256 hash */
-    uint64_t size;          /* Expected size in bytes */
-    semver_t version;       /* Semantic version requirement */
-    char model_id[64];      /* Unique identifier */
-    uint8_t reserved[32];   /* Reserved */
+    char url[PSAMC_MAX_URL_LENGTH];    /* URL or path to external model */
+    sha256_hash_t sha256;              /* Expected SHA-256 hash */
+    uint64_t size;                     /* Expected size in bytes */
+    semver_t version;                  /* Semantic version requirement */
+    char model_id[PSAMC_MAX_MODEL_ID]; /* Unique identifier */
+    uint8_t reserved[32];              /* Reserved */
 } psamc_model_ref_t;
 
 /* Hyperparameter presets */
@@ -139,6 +150,13 @@ typedef struct {
     uint8_t reserved[32];       /* Reserved for future parameters */
 } psamc_hyperparams_t;
 
+/* Optional dataset/source metadata entries */
+typedef struct {
+    char label[PSAMC_SOURCE_LABEL_MAX];    /* Short name or description */
+    char uri[PSAMC_SOURCE_URI_MAX];        /* Reference location or URL */
+    char license[PSAMC_SOURCE_LICENSE_MAX];/* License or usage terms */
+} psamc_source_t;
+
 /* Manifest for integrity checking */
 typedef struct {
     uint32_t num_references;    /* Number of external model references */
@@ -146,8 +164,10 @@ typedef struct {
     sha256_hash_t self_hash;    /* Hash of this composite (excluding this field) */
     sha256_hash_t source_hash;  /* Hash of training data source */
     uint64_t created_timestamp; /* Unix timestamp */
-    char created_by[128];       /* Creator/tool identification */
-    uint8_t reserved[32];       /* Reserved */
+    char created_by[PSAMC_CREATED_BY_MAX]; /* Creator/tool identification */
+    uint32_t source_count;      /* Optional dataset metadata entries */
+    psamc_source_t* sources;    /* Array of dataset metadata entries */
+    uint8_t reserved[24];       /* Reserved */
 } psamc_manifest_t;
 
 /* Layer metadata */
@@ -161,6 +181,11 @@ typedef struct {
     };
     uint8_t reserved[32];       /* Reserved */
 } psamc_layer_meta_t;
+
+typedef struct {
+    psamc_manifest_t manifest;
+    psamc_hyperparams_t hyperparams;
+} psamc_composite_t;
 
 /* Preset configurations */
 static const psamc_hyperparams_t PSAMC_PRESET_FAST_CONFIG = {
@@ -210,7 +235,7 @@ static const psamc_hyperparams_t PSAMC_PRESET_TINY_CONFIG = {
  */
 int psamc_save(
     const char* path,
-    const void* base_model,
+    const psam_model_t* base_model,
     const psamc_hyperparams_t* hyperparams,
     const psamc_manifest_t* manifest
 );
@@ -219,10 +244,15 @@ int psamc_save(
  * Load a composite model with integrity verification
  *
  * @param path Path to .psamc file
- * @param verify_integrity If true, verify all SHA-256 checksums
- * @return Model handle or NULL on error
+ * @param verify_integrity If true, verify SHA-256 checksums & manifest references
+ * @return Composite handle or NULL on error
  */
-void* psamc_load(const char* path, bool verify_integrity);
+psamc_composite_t* psamc_load(const char* path, bool verify_integrity);
+
+/**
+ * Release resources allocated by psamc_load
+ */
+void psamc_free(psamc_composite_t* composite);
 
 /**
  * Verify integrity of external references in manifest

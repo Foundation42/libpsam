@@ -162,6 +162,7 @@ static float compute_ppmi(
     uint32_t source,
     uint32_t target
 ) {
+    (void)total_pairs;
     // Match JavaScript: no +1 smoothing, just use actual counts
     uint32_t source_count = model->unigram_counts[source];
     uint32_t target_count = model->unigram_counts[target];

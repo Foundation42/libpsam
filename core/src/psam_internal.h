@@ -47,6 +47,11 @@ typedef struct layer_node {
 } layer_node_t;
 
 /**
+ * Provenance metadata (shared with public API).
+ */
+typedef psam_provenance_t psam_provenance_internal_t;
+
+/**
  * CSR (Compressed Sparse Row) storage
  */
 typedef struct {
@@ -73,6 +78,7 @@ typedef struct {
 struct psam_model {
     /* Configuration */
     psam_config_t config;
+    psam_provenance_internal_t provenance;
 
     /* Core data */
     csr_storage_t* csr;
