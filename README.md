@@ -118,6 +118,12 @@ cmake --build .
 sudo cmake --install .
 
 # (Installs `libpsam.so`, headers, the `psam` CLI, and `man 1 psam`.)
+
+# Refresh linker cache on Linux if you install to /usr/local
+sudo ldconfig
+
+# Or add to LD_LIBRARY_PATH for a custom prefix:
+# export LD_LIBRARY_PATH=$HOME/.local/lib:$LD_LIBRARY_PATH
 ```
 
 ### Language Bindings
