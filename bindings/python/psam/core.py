@@ -39,6 +39,7 @@ class ModelStats:
 
 
 # Struct definitions matching C API
+PSAM_LAYER_ID_MAX = 64
 class PSAMPrediction(ctypes.Structure):
     _fields_ = [
         ("token_id", ctypes.c_uint32),
@@ -67,6 +68,13 @@ class PSAMExplainResult(ctypes.Structure):
     ]
 
 
+class PSAMCompositeLayerInfo(ctypes.Structure):
+    _fields_ = [
+        ("id", ctypes.c_char * PSAM_LAYER_ID_MAX),
+        ("weight", ctypes.c_float),
+    ]
+
+
 @dataclass
 class ExplainTerm:
     """Explanation term showing why a token was predicted"""
@@ -86,6 +94,13 @@ class ExplainResult:
     bias: float
     term_count: int
     terms: List[ExplainTerm]
+
+
+@dataclass
+class CompositeLayerInfo:
+    """Metadata for a layer inside a composite"""
+    layer_id: str
+    weight: float
 
 
 class PSAMStatsStruct(ctypes.Structure):
@@ -204,24 +219,49 @@ def _configure_library(lib):
     ]
     lib.psam_explain.restype = ctypes.c_int32
 
-    # Layer composition
-    lib.psam_add_layer.argtypes = [
+    # Layered composites
+    lib.psam_create_layered.argtypes = [ctypes.c_void_p]
+    lib.psam_create_layered.restype = ctypes.c_void_p
+
+    lib.psam_composite_destroy.argtypes = [ctypes.c_void_p]
+    lib.psam_composite_destroy.restype = None
+
+    lib.psam_composite_set_base_weight.argtypes = [ctypes.c_void_p, ctypes.c_float]
+    lib.psam_composite_set_base_weight.restype = ctypes.c_int32
+
+    lib.psam_composite_add_layer.argtypes = [
         ctypes.c_void_p,
         ctypes.c_char_p,
         ctypes.c_void_p,
         ctypes.c_float,
     ]
-    lib.psam_add_layer.restype = ctypes.c_int32
+    lib.psam_composite_add_layer.restype = ctypes.c_int32
 
-    lib.psam_remove_layer.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    lib.psam_remove_layer.restype = ctypes.c_int32
+    lib.psam_composite_remove_layer.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.psam_composite_remove_layer.restype = ctypes.c_int32
 
-    lib.psam_update_layer_weight.argtypes = [
+    lib.psam_composite_update_layer_weight.argtypes = [
         ctypes.c_void_p,
         ctypes.c_char_p,
         ctypes.c_float,
     ]
-    lib.psam_update_layer_weight.restype = ctypes.c_int32
+    lib.psam_composite_update_layer_weight.restype = ctypes.c_int32
+
+    lib.psam_composite_list_layers.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(PSAMCompositeLayerInfo),
+        ctypes.c_size_t,
+    ]
+    lib.psam_composite_list_layers.restype = ctypes.c_int32
+
+    lib.psam_composite_predict.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_size_t,
+        ctypes.POINTER(PSAMPrediction),
+        ctypes.c_size_t,
+    ]
+    lib.psam_composite_predict.restype = ctypes.c_int32
 
     # Persistence
     lib.psam_save.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
@@ -453,42 +493,14 @@ class PSAM:
         # Sample
         return np.random.choice(token_ids, p=probs)
 
-    def add_layer(self, layer_id: str, overlay: "PSAM", weight: float):
+    def create_layered_composite(self) -> "LayeredComposite":
         """
-        Add an overlay layer for domain adaptation
-
-        Args:
-            layer_id: Unique identifier for the layer
-            overlay: PSAM model to use as overlay
-            weight: Blending weight for the layer
+        Build a layered composite around this (finalized) base model.
         """
-        result = self._lib.psam_add_layer(
-            self._handle, layer_id.encode("utf-8"), overlay._handle, weight
-        )
-        _check_error(result, "add_layer")
-
-    def remove_layer(self, layer_id: str):
-        """
-        Remove a layer by ID
-
-        Args:
-            layer_id: Layer identifier to remove
-        """
-        result = self._lib.psam_remove_layer(self._handle, layer_id.encode("utf-8"))
-        _check_error(result, "remove_layer")
-
-    def update_layer_weight(self, layer_id: str, new_weight: float):
-        """
-        Update the weight of an existing layer
-
-        Args:
-            layer_id: Layer identifier
-            new_weight: New blending weight
-        """
-        result = self._lib.psam_update_layer_weight(
-            self._handle, layer_id.encode("utf-8"), new_weight
-        )
-        _check_error(result, "update_layer_weight")
+        handle = self._lib.psam_create_layered(self._handle)
+        if not handle:
+            raise PSAMError("Failed to create layered composite (is the model finalized?)")
+        return LayeredComposite(self._lib, handle, self)
 
     def save(self, path: str):
         """
@@ -573,3 +585,95 @@ class PSAM:
     def top_k(self) -> int:
         """Top-K predictions"""
         return self._top_k
+
+
+class LayeredComposite:
+    """Runtime layered composite that blends a base model with overlays."""
+
+    def __init__(self, lib, handle, base: PSAM):
+        self._lib = lib
+        self._handle = handle
+        self._base = base
+        self._default_top_k = base.top_k
+
+    def __del__(self):
+        self.destroy()
+
+    def destroy(self):
+        """Free the composite handle."""
+        if getattr(self, "_handle", None):
+            self._lib.psam_composite_destroy(self._handle)
+            self._handle = None
+
+    def set_base_weight(self, weight: float):
+        result = self._lib.psam_composite_set_base_weight(self._handle, weight)
+        _check_error(result, "composite_set_base_weight")
+
+    def add_layer(self, layer_id: str, overlay: PSAM, weight: float):
+        result = self._lib.psam_composite_add_layer(
+            self._handle, layer_id.encode("utf-8"), overlay._handle, weight
+        )
+        _check_error(result, "composite_add_layer")
+
+    def remove_layer(self, layer_id: str):
+        result = self._lib.psam_composite_remove_layer(self._handle, layer_id.encode("utf-8"))
+        _check_error(result, "composite_remove_layer")
+
+    def update_layer_weight(self, layer_id: str, new_weight: float):
+        result = self._lib.psam_composite_update_layer_weight(
+            self._handle, layer_id.encode("utf-8"), new_weight
+        )
+        _check_error(result, "composite_update_layer_weight")
+
+    def list_layers(self, max_layers: int = 16) -> List[CompositeLayerInfo]:
+        if max_layers <= 0:
+            return []
+
+        buffer = (PSAMCompositeLayerInfo * max_layers)()
+        count = self._lib.psam_composite_list_layers(
+            self._handle,
+            buffer,
+            max_layers,
+        )
+        if count < 0:
+            _check_error(count, "composite_list_layers")
+
+        layers: List[CompositeLayerInfo] = []
+        for i in range(min(count, max_layers)):
+            entry = buffer[i]
+            layer_id = entry.id.split(b"\x00", 1)[0].decode("utf-8")
+            layers.append(CompositeLayerInfo(layer_id=layer_id, weight=entry.weight))
+        return layers
+
+    def predict(self, context: List[int], max_predictions: Optional[int] = None) -> Tuple[List[int], np.ndarray]:
+        if not context:
+            return [], np.zeros(0, dtype=np.float32)
+
+        limit = max_predictions if max_predictions is not None else self._default_top_k
+        predictions = (PSAMPrediction * limit)()
+        context_array = (ctypes.c_uint32 * len(context))(*context)
+
+        count = self._lib.psam_composite_predict(
+            self._handle,
+            context_array,
+            len(context),
+            predictions,
+            limit,
+        )
+        if count < 0:
+            _check_error(count, "composite_predict")
+
+        token_ids = [predictions[i].token_id for i in range(count)]
+        scores = np.array([predictions[i].score for i in range(count)], dtype=np.float32)
+        return token_ids, scores
+
+    def sample(self, context: List[int], temperature: float = 1.0) -> int:
+        token_ids, scores = self.predict(context, self._default_top_k)
+        if not token_ids:
+            raise PSAMError("No predictions available")
+
+        logits = scores / temperature
+        logits = logits - np.max(logits)
+        exp_scores = np.exp(logits)
+        probs = exp_scores / np.sum(exp_scores)
+        return int(np.random.choice(token_ids, p=probs))

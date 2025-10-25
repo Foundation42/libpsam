@@ -37,16 +37,6 @@
 /* ============================ Internal Data Structures ============================ */
 
 /**
- * Layer composition node (linked list)
- */
-typedef struct layer_node {
-    char id[PSAM_LAYER_ID_MAX];
-    psam_model_t* model;
-    float weight;
-    struct layer_node* next;
-} layer_node_t;
-
-/**
  * Provenance metadata (shared with public API).
  */
 typedef psam_provenance_t psam_provenance_internal_t;
@@ -93,9 +83,6 @@ struct psam_model {
     /* Training state */
     void* training_data;      /* Opaque training accumulator */
     bool is_finalized;
-
-    /* Layer composition */
-    layer_node_t* layers;
 
     /* Thread safety */
     psam_lock_t lock;

@@ -85,22 +85,23 @@ for (int i = 0; i < num_predictions; i++) {
 }
 ```
 
-### Layer Composition
+### Layered Composites
 
 ```c
-// Load base and overlay models
 psam_model_t* base = psam_load("models/general.psam");
 psam_model_t* medical = psam_load("models/medical.psam");
+psam_model_t* legal = psam_load("models/legal.psam");
 
-// Add medical domain layer with 1.5x weight
-psam_add_layer(base, "medical", medical, 1.5);
+psam_composite_t* layered = psam_create_layered(base);
+psam_composite_add_layer(layered, "medical", medical, 1.5f);
 
-// Predictions now blend both models
-psam_predict(base, context, 3, predictions, 10);
+psam_prediction_t blended[5];
+psam_composite_predict(layered, context, 3, blended, 5);
 
-// Switch domains
-psam_remove_layer(base, "medical");
-psam_add_layer(base, "legal", legal_model, 1.5);
+psam_composite_remove_layer(layered, "medical");
+psam_composite_add_layer(layered, "legal", legal, 1.2f);
+
+psam_composite_destroy(layered);
 ```
 
 ### Persistence
@@ -135,8 +136,8 @@ See `src/io/serialize.c` for format details.
 ## Thread Safety
 
 - Multiple threads can call `psam_predict()` simultaneously (read lock)
-- Layer operations (`psam_add_layer`, etc.) are exclusive (write lock)
-- Training and finalization must be called from single thread
+- Composite builders maintain their own synchronization while calling into base/layer models
+- Training and finalization must be called from a single thread
 
 ## Error Handling
 

@@ -4,7 +4,18 @@
  * Supports both Bun (bun:ffi) and Node.js (via dynamic detection)
  */
 
-import type { TokenId, InferenceResult, ModelStats, TrainablePSAM, PersistenceOptions, ExplainTerm, ExplainResult } from './types.js';
+import type {
+  TokenId,
+  InferenceResult,
+  ModelStats,
+  TrainablePSAM,
+  PersistenceOptions,
+  ExplainTerm,
+  ExplainResult,
+  LayeredComposite,
+  CompositeLayerInfo,
+  PSAM,
+} from './types.js';
 
 // Platform-specific FFI loading
 let FFI: any = null;
@@ -51,6 +62,9 @@ const PREDICTION_SIZE = 12; // sizeof(psam_prediction_t)
 const STATS_SIZE = 32; // sizeof(psam_stats_t)
 const EXPLAIN_TERM_SIZE = 24; // sizeof(psam_explain_term_t)
 const EXPLAIN_RESULT_SIZE = 16; // sizeof(psam_explain_result_t)
+const PSAM_LAYER_ID_MAX = 64;
+const COMPOSITE_LAYER_INFO_SIZE = 68;
+const textDecoder = new TextDecoder();
 
 let cachedLib: any = null;
 
@@ -79,9 +93,17 @@ function loadLibrary(libraryPath?: string): any {
         args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u32, FFIType.ptr, FFIType.i32, FFIType.ptr],
         returns: FFIType.i32,
       },
-      psam_add_layer: { args: [FFIType.ptr, FFIType.cstring, FFIType.ptr, FFIType.f32], returns: FFIType.i32 },
-      psam_remove_layer: { args: [FFIType.ptr, FFIType.cstring], returns: FFIType.i32 },
-      psam_update_layer_weight: { args: [FFIType.ptr, FFIType.cstring, FFIType.f32], returns: FFIType.i32 },
+      psam_create_layered: { args: [FFIType.ptr], returns: FFIType.ptr },
+      psam_composite_destroy: { args: [FFIType.ptr], returns: FFIType.void },
+      psam_composite_set_base_weight: { args: [FFIType.ptr, FFIType.f32], returns: FFIType.i32 },
+      psam_composite_add_layer: { args: [FFIType.ptr, FFIType.cstring, FFIType.ptr, FFIType.f32], returns: FFIType.i32 },
+      psam_composite_remove_layer: { args: [FFIType.ptr, FFIType.cstring], returns: FFIType.i32 },
+      psam_composite_update_layer_weight: { args: [FFIType.ptr, FFIType.cstring, FFIType.f32], returns: FFIType.i32 },
+      psam_composite_list_layers: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
+      psam_composite_predict: {
+        args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
+        returns: FFIType.i32,
+      },
       psam_save: { args: [FFIType.ptr, FFIType.cstring], returns: FFIType.i32 },
       psam_load: { args: [FFIType.cstring], returns: FFIType.ptr },
       psam_get_stats: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
@@ -99,9 +121,14 @@ function loadLibrary(libraryPath?: string): any {
       psam_finalize_training: ['int32', ['pointer']],
       psam_predict: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'uint64']],
       psam_explain: ['int32', ['pointer', 'pointer', 'uint64', 'uint32', 'pointer', 'int32', 'pointer']],
-      psam_add_layer: ['int32', ['pointer', 'string', 'pointer', 'float']],
-      psam_remove_layer: ['int32', ['pointer', 'string']],
-      psam_update_layer_weight: ['int32', ['pointer', 'string', 'float']],
+      psam_create_layered: ['pointer', ['pointer']],
+      psam_composite_destroy: ['void', ['pointer']],
+      psam_composite_set_base_weight: ['int32', ['pointer', 'float']],
+      psam_composite_add_layer: ['int32', ['pointer', 'string', 'pointer', 'float']],
+      psam_composite_remove_layer: ['int32', ['pointer', 'string']],
+      psam_composite_update_layer_weight: ['int32', ['pointer', 'string', 'float']],
+      psam_composite_list_layers: ['int32', ['pointer', 'pointer', 'uint64']],
+      psam_composite_predict: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'uint64']],
       psam_save: ['int32', ['pointer', 'string']],
       psam_load: ['pointer', ['string']],
       psam_get_stats: ['int32', ['pointer', 'pointer']],
@@ -300,22 +327,13 @@ export class PSAMNative implements TrainablePSAM {
     return result.ids[0];
   }
 
-  addLayer(layerId: string, overlay: PSAMNative, weight: number): void {
+  createLayeredComposite(): LayeredCompositeNative {
     const symbols = this.lib.symbols || this.lib;
-    const result = symbols.psam_add_layer(this.handle, layerId, overlay.handle, weight);
-    checkError(result, 'addLayer', this.lib);
-  }
-
-  removeLayer(layerId: string): void {
-    const symbols = this.lib.symbols || this.lib;
-    const result = symbols.psam_remove_layer(this.handle, layerId);
-    checkError(result, 'removeLayer', this.lib);
-  }
-
-  updateLayerWeight(layerId: string, newWeight: number): void {
-    const symbols = this.lib.symbols || this.lib;
-    const result = symbols.psam_update_layer_weight(this.handle, layerId, newWeight);
-    checkError(result, 'updateLayerWeight', this.lib);
+    const handle = symbols.psam_create_layered(this.handle);
+    if (!handle) {
+      throw new Error('Failed to create layered composite (is the model finalized?)');
+    }
+    return new LayeredCompositeNative(this.lib, handle, this);
   }
 
   save(path: string, _options?: PersistenceOptions): void {
@@ -370,6 +388,15 @@ export class PSAMNative implements TrainablePSAM {
     this.handle = null;
   }
 
+  get topK(): number {
+    return this._topK;
+  }
+
+  /** @internal */
+  getNativeHandle(): any {
+    return this.handle;
+  }
+
   static version(): string {
     try {
       const lib = loadLibrary();
@@ -378,5 +405,140 @@ export class PSAMNative implements TrainablePSAM {
     } catch {
       return 'unavailable';
     }
+  }
+}
+
+export class LayeredCompositeNative implements LayeredComposite {
+  private handle: any;
+  private lib: any;
+  private baseTopK: number;
+
+  constructor(lib: any, handle: any, base: PSAMNative) {
+    this.lib = lib;
+    this.handle = handle;
+    this.baseTopK = base.topK;
+  }
+
+  private get symbols() {
+    return this.lib.symbols || this.lib;
+  }
+
+  destroy(): void {
+    if (this.handle) {
+      this.symbols.psam_composite_destroy(this.handle);
+      this.handle = null;
+    }
+  }
+
+  setBaseWeight(weight: number): void {
+    const result = this.symbols.psam_composite_set_base_weight(this.handle, weight);
+    checkError(result, 'composite_set_base_weight', this.lib);
+  }
+
+  addLayer(layerId: string, overlay: PSAM, weight: number): void {
+    if (!(overlay instanceof PSAMNative)) {
+      throw new Error('Layered composites currently require PSAMNative overlays');
+    }
+    const nativeHandle = (overlay as PSAMNative).getNativeHandle();
+    const result = this.symbols.psam_composite_add_layer(this.handle, layerId, nativeHandle, weight);
+    checkError(result, 'composite_add_layer', this.lib);
+  }
+
+  removeLayer(layerId: string): void {
+    const result = this.symbols.psam_composite_remove_layer(this.handle, layerId);
+    checkError(result, 'composite_remove_layer', this.lib);
+  }
+
+  updateLayerWeight(layerId: string, newWeight: number): void {
+    const result = this.symbols.psam_composite_update_layer_weight(this.handle, layerId, newWeight);
+    checkError(result, 'composite_update_layer_weight', this.lib);
+  }
+
+  listLayers(maxLayers: number = 16): CompositeLayerInfo[] {
+    if (maxLayers <= 0) {
+      return [];
+    }
+
+    const buffer = new Uint8Array(maxLayers * COMPOSITE_LAYER_INFO_SIZE);
+    const count = this.symbols.psam_composite_list_layers(this.handle, buffer, BigInt(maxLayers));
+    if (count < 0) {
+      checkError(count, 'composite_list_layers', this.lib);
+      return [];
+    }
+
+    const layers: CompositeLayerInfo[] = [];
+    const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+
+    for (let i = 0; i < Math.min(count, maxLayers); i++) {
+      const baseOffset = i * COMPOSITE_LAYER_INFO_SIZE;
+      let end = baseOffset;
+      while (end < baseOffset + PSAM_LAYER_ID_MAX && buffer[end] !== 0) {
+        end++;
+      }
+      const idBytes = buffer.slice(baseOffset, end);
+      const id = textDecoder.decode(idBytes);
+      const weight = view.getFloat32(baseOffset + PSAM_LAYER_ID_MAX, true);
+      layers.push({ id, weight });
+    }
+
+    return layers;
+  }
+
+  predict(context: TokenId[], maxPredictions: number = this.baseTopK): InferenceResult {
+    if (context.length === 0) {
+      return { ids: [], scores: new Float32Array() };
+    }
+
+    const outBuffer = new Uint8Array(maxPredictions * PREDICTION_SIZE);
+    const contextArray = new Uint32Array(context);
+
+    const count = this.symbols.psam_composite_predict(
+      this.handle,
+      contextArray,
+      BigInt(contextArray.length),
+      outBuffer,
+      BigInt(maxPredictions)
+    );
+
+    if (count < 0) {
+      checkError(count, 'composite_predict', this.lib);
+      return { ids: [], scores: new Float32Array() };
+    }
+
+    const ids: TokenId[] = [];
+    const scores = new Float32Array(count);
+    const view = new DataView(outBuffer.buffer, outBuffer.byteOffset, outBuffer.byteLength);
+
+    for (let i = 0; i < count; i++) {
+      const offset = i * PREDICTION_SIZE;
+      ids.push(view.getUint32(offset, true));
+      scores[i] = view.getFloat32(offset + 4, true);
+    }
+
+    return { ids, scores };
+  }
+
+  sample(context: TokenId[], temperature: number = 1.0): TokenId {
+    const result = this.predict(context, this.baseTopK);
+    if (result.ids.length === 0) {
+      throw new Error('No predictions available');
+    }
+
+    const logits = Array.from(result.scores).map(score => score / temperature);
+    const maxLogit = Math.max(...logits);
+    const expScores = logits.map(l => Math.exp(l - maxLogit));
+    const sumExp = expScores.reduce((a, b) => a + b, 0);
+    const probs = expScores.map(e => e / sumExp);
+
+    const rand = Math.random();
+    let acc = 0;
+    for (let i = 0; i < probs.length; i++) {
+      acc += probs[i];
+      if (rand < acc) {
+        return result.ids[i];
+      }
+    }
+
+    return result.ids[0];
   }
 }

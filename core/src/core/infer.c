@@ -154,17 +154,7 @@ int psam_predict(
         }
     }
 
-    /* 3. Apply layer contributions (if any) */
-    layer_node_t* layer = model->layers;
-    while (layer) {
-        /* TODO: Recursively call psam_predict on overlay model
-         * and blend results with layer weight.
-         * For now, we skip layers in this initial implementation.
-         */
-        layer = layer->next;
-    }
-
-    /* 4. Collect all scores into predictions array */
+    /* 3. Collect all scores into predictions array */
     size_t num_candidates = max_preds < vocab_size ? max_preds : vocab_size;
     psam_prediction_t* all_preds = malloc(vocab_size * sizeof(psam_prediction_t));
     if (!all_preds) {
@@ -178,10 +168,10 @@ int psam_predict(
         all_preds[i].calibrated_prob = 0.0f;  /* TODO: Implement calibration */
     }
 
-    /* 5. Sort by score (descending) */
+    /* 4. Sort by score (descending) */
     qsort(all_preds, vocab_size, sizeof(psam_prediction_t), compare_predictions);
 
-    /* 6. Copy top-K to output */
+    /* 5. Copy top-K to output */
     size_t output_count = num_candidates < vocab_size ? num_candidates : vocab_size;
     memcpy(out_preds, all_preds, output_count * sizeof(psam_prediction_t));
 

@@ -337,51 +337,6 @@ int psam_composite_predict(
 
 Blend predictions from the base model and every attached layer using their configured weights. Returns the number of predictions written.
 
-#### Legacy Layer Composition
-
-##### `psam_add_layer`
-
-```c
-psam_error_t psam_add_layer(
-    psam_model_t* base,
-    const char* layer_id,
-    psam_model_t* overlay,
-    float weight
-);
-```
-
-Add an overlay layer for domain adaptation.
-
-##### `psam_remove_layer`
-
-```c
-psam_error_t psam_remove_layer(psam_model_t* base, const char* layer_id);
-```
-
-Remove a layer by ID.
-
-##### `psam_update_layer_weight`
-
-```c
-psam_error_t psam_update_layer_weight(
-    psam_model_t* base,
-    const char* layer_id,
-    float new_weight
-);
-```
-
-Update layer weight.
-
-##### `psam_list_layers`
-
-```c
-int psam_list_layers(psam_model_t* model, const char** out_ids, size_t max_layers);
-```
-
-List active layer IDs.
-
-**Returns:** Number of layers, or negative error code
-
 #### Persistence
 
 ##### `psam_save`

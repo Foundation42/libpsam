@@ -7,6 +7,8 @@ dist/
 *.dylib
 *.dll
 *.exe
+core/tests/test_simple
+core/tests/test_prediction
 
 # CMake
 CMakeFiles/

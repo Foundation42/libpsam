@@ -264,19 +264,6 @@ export class PSAMWASM implements TrainablePSAM {
     return result.ids[0];
   }
 
-  addLayer(layerId: string, overlay: PSAMWASM, weight: number): void {
-    // Not implemented in browser version (would require string marshalling)
-    throw new Error('Layer composition not yet implemented in WASM');
-  }
-
-  removeLayer(layerId: string): void {
-    throw new Error('Layer composition not yet implemented in WASM');
-  }
-
-  updateLayerWeight(layerId: string, newWeight: number): void {
-    throw new Error('Layer composition not yet implemented in WASM');
-  }
-
   save(path: string, options?: PersistenceOptions): void {
     // Not implemented in browser (would need filesystem API or download)
     throw new Error('Save not implemented in WASM (use serialization APIs instead)');

@@ -136,21 +136,6 @@ export interface PersistenceOptions {
  */
 export interface PSAM {
   /**
-   * Add an overlay layer for domain adaptation
-   */
-  addLayer(layerId: string, overlay: PSAM, weight: number): void;
-
-  /**
-   * Remove a layer by ID
-   */
-  removeLayer(layerId: string): void;
-
-  /**
-   * Update layer weight
-   */
-  updateLayerWeight(layerId: string, newWeight: number): void;
-
-  /**
    * Predict next tokens given context
    */
   predict(context: TokenId[], maxPredictions?: number): InferenceResult;
@@ -180,6 +165,11 @@ export interface PSAM {
    * Destroy model and free resources
    */
   destroy?(): void;
+
+  /**
+   * Build a layered composite using this model as the base.
+   */
+  createLayeredComposite?(): LayeredComposite;
 }
 
 /**
@@ -200,4 +190,20 @@ export interface TrainablePSAM extends PSAM {
    * Finalize training (compute PPMI/IDF, build CSR)
    */
   finalizeTraining(): void;
+}
+
+export interface CompositeLayerInfo {
+  id: string;
+  weight: number;
+}
+
+export interface LayeredComposite {
+  setBaseWeight(weight: number): void;
+  addLayer(layerId: string, overlay: PSAM, weight: number): void;
+  removeLayer(layerId: string): void;
+  updateLayerWeight(layerId: string, newWeight: number): void;
+  listLayers(maxLayers?: number): CompositeLayerInfo[];
+  predict(context: TokenId[], maxPredictions?: number): InferenceResult;
+  sample(context: TokenId[], temperature?: number): TokenId;
+  destroy(): void;
 }

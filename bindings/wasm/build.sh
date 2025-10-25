@@ -28,7 +28,7 @@ SOURCES=(
     "$SRC_DIR/core/csr.c"
     "$SRC_DIR/core/train.c"
     "$SRC_DIR/core/infer.c"
-    "$SRC_DIR/composition/layers.c"
+    "$SRC_DIR/composition/composite_layered.c"
     "$SRC_DIR/io/serialize.c"
 )
 
@@ -52,9 +52,14 @@ CFLAGS=(
         "_psam_finalize_training",
         "_psam_predict",
         "_psam_explain",
-        "_psam_add_layer",
-        "_psam_remove_layer",
-        "_psam_update_layer_weight",
+        "_psam_create_layered",
+        "_psam_composite_destroy",
+        "_psam_composite_set_base_weight",
+        "_psam_composite_add_layer",
+        "_psam_composite_remove_layer",
+        "_psam_composite_update_layer_weight",
+        "_psam_composite_list_layers",
+        "_psam_composite_predict",
         "_psam_save",
         "_psam_load",
         "_psam_get_stats",

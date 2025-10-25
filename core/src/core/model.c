@@ -68,7 +68,6 @@ psam_model_t* psam_create_with_config(const psam_config_t* config) {
     model->total_tokens = 0;
     model->csr = NULL;
     model->training_data = NULL;
-    model->layers = NULL;
 
     /* Default provenance */
     model->provenance.created_timestamp = (uint64_t)time(NULL);
@@ -110,14 +109,6 @@ void psam_destroy(psam_model_t* model) {
     extern void psam_free_training_data(void* training_data);
     if (model->training_data) {
         psam_free_training_data(model->training_data);
-    }
-
-    /* Free layer list (but not the overlay models - caller owns them) */
-    layer_node_t* layer = model->layers;
-    while (layer) {
-        layer_node_t* next = layer->next;
-        free(layer);
-        layer = next;
     }
 
     free(model);
