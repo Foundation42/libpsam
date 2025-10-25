@@ -5,14 +5,17 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "../psam_internal.h"
+#include "../../include/psam_composite.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <ctype.h>
 
 typedef struct {
     char id[PSAM_LAYER_ID_MAX];
     psam_model_t* model;
     float weight;
+    bool owns_model;
 } layered_entry_t;
 
 struct psam_composite {
@@ -22,7 +25,16 @@ struct psam_composite {
     layered_entry_t* layers;
     size_t layer_count;
     size_t layer_capacity;
+    bool owns_base;
 };
+
+static psam_error_t composite_add_layer_internal(
+    psam_composite_t* composite,
+    const char* layer_id,
+    psam_model_t* layer_model,
+    float weight,
+    bool take_ownership
+);
 
 typedef struct {
     uint32_t token;
@@ -67,6 +79,7 @@ psam_composite_t* psam_create_layered(psam_model_t* base_model) {
     composite->layers = NULL;
     composite->layer_capacity = 0;
     composite->layer_count = 0;
+    composite->owns_base = false;
 
     return composite;
 }
@@ -75,7 +88,18 @@ void psam_composite_destroy(psam_composite_t* composite) {
     if (!composite) {
         return;
     }
-    free(composite->layers);
+    if (composite->owns_base && composite->base) {
+        psam_destroy(composite->base);
+        composite->base = NULL;
+    }
+    if (composite->layers) {
+        for (size_t i = 0; i < composite->layer_count; ++i) {
+            if (composite->layers[i].owns_model && composite->layers[i].model) {
+                psam_destroy(composite->layers[i].model);
+            }
+        }
+        free(composite->layers);
+    }
     free(composite);
 }
 
@@ -87,11 +111,12 @@ psam_error_t psam_composite_set_base_weight(psam_composite_t* composite, float w
     return PSAM_OK;
 }
 
-psam_error_t psam_composite_add_layer(
+static psam_error_t composite_add_layer_internal(
     psam_composite_t* composite,
     const char* layer_id,
     psam_model_t* layer_model,
-    float weight
+    float weight,
+    bool take_ownership
 ) {
     if (!composite || !layer_id || !layer_model) {
         return PSAM_ERR_NULL_PARAM;
@@ -124,8 +149,18 @@ psam_error_t psam_composite_add_layer(
     strncpy(entry->id, layer_id, PSAM_LAYER_ID_MAX - 1);
     entry->model = layer_model;
     entry->weight = weight;
+    entry->owns_model = take_ownership;
 
     return PSAM_OK;
+}
+
+psam_error_t psam_composite_add_layer(
+    psam_composite_t* composite,
+    const char* layer_id,
+    psam_model_t* layer_model,
+    float weight
+) {
+    return composite_add_layer_internal(composite, layer_id, layer_model, weight, false);
 }
 
 psam_error_t psam_composite_remove_layer(psam_composite_t* composite, const char* layer_id) {
@@ -135,6 +170,9 @@ psam_error_t psam_composite_remove_layer(psam_composite_t* composite, const char
 
     for (size_t i = 0; i < composite->layer_count; ++i) {
         if (strncmp(composite->layers[i].id, layer_id, PSAM_LAYER_ID_MAX) == 0) {
+            if (composite->layers[i].owns_model && composite->layers[i].model) {
+                psam_destroy(composite->layers[i].model);
+            }
             if (i + 1 < composite->layer_count) {
                 memmove(
                     &composite->layers[i],
@@ -197,6 +235,136 @@ static int compare_scores_desc(const void* a, const void* b) {
     if (sa->score > sb->score) return -1;
     if (sa->score < sb->score) return 1;
     return 0;
+}
+
+static bool is_absolute_path(const char* path) {
+    if (!path || path[0] == '\0') {
+        return false;
+    }
+#ifdef _WIN32
+    if (path[0] == '/' || path[0] == '\\') {
+        return true;
+    }
+    if (isalpha((unsigned char)path[0]) && path[1] == ':' && (path[2] == '/' || path[2] == '\\')) {
+        return true;
+    }
+#else
+    if (path[0] == '/') {
+        return true;
+    }
+#endif
+    return false;
+}
+
+static char* resolve_reference_path(const char* composite_path, const char* ref_path) {
+    if (!ref_path) {
+        return NULL;
+    }
+    if (is_absolute_path(ref_path)) {
+        return strdup(ref_path);
+    }
+
+    if (!composite_path) {
+        return strdup(ref_path);
+    }
+
+    const char* last_slash = strrchr(composite_path, '/');
+#ifdef _WIN32
+    const char* last_backslash = strrchr(composite_path, '\\');
+    if (!last_slash || (last_backslash && last_backslash > last_slash)) {
+        last_slash = last_backslash;
+    }
+#endif
+    size_t dir_len = last_slash ? (size_t)(last_slash - composite_path + 1) : 0;
+    size_t ref_len = strlen(ref_path);
+    char* resolved = malloc(dir_len + ref_len + 1);
+    if (!resolved) {
+        return NULL;
+    }
+    if (dir_len > 0) {
+        memcpy(resolved, composite_path, dir_len);
+    }
+    memcpy(resolved + dir_len, ref_path, ref_len + 1);
+    return resolved;
+}
+
+static psam_model_t* load_model_from_ref(const char* composite_path, const psamc_model_ref_t* ref) {
+    if (!ref) {
+        return NULL;
+    }
+    char* resolved = resolve_reference_path(composite_path, ref->url);
+    const char* path_to_load = resolved ? resolved : ref->url;
+    psam_model_t* model = psam_load(path_to_load);
+    free(resolved);
+    return model;
+}
+
+psam_composite_t* psam_composite_load_file(const char* path, bool verify_integrity) {
+    if (!path) {
+        return NULL;
+    }
+
+    psamc_composite_t* spec = psamc_load(path, verify_integrity);
+    if (!spec) {
+        return NULL;
+    }
+
+    if (spec->manifest.num_references == 0) {
+        psamc_free(spec);
+        return NULL;
+    }
+
+    if (spec->topology.base_ref_index >= spec->manifest.num_references) {
+        spec->topology.base_ref_index = 0;
+    }
+
+    psam_model_t* base_model = load_model_from_ref(path, &spec->manifest.refs[spec->topology.base_ref_index]);
+    if (!base_model) {
+        psamc_free(spec);
+        return NULL;
+    }
+
+    psam_composite_t* composite = psam_create_layered(base_model);
+    if (!composite) {
+        psam_destroy(base_model);
+        psamc_free(spec);
+        return NULL;
+    }
+    composite->owns_base = true;
+    psam_composite_set_base_weight(composite, spec->topology.base_weight);
+
+    for (uint32_t i = 0; i < spec->topology.layer_count; ++i) {
+        const psamc_layer_entry_t* entry = &spec->topology.layers[i];
+        if (entry->ref_index >= spec->manifest.num_references) {
+            continue;
+        }
+        psam_model_t* overlay = load_model_from_ref(path, &spec->manifest.refs[entry->ref_index]);
+        if (!overlay) {
+            psam_composite_destroy(composite);
+            psamc_free(spec);
+            return NULL;
+        }
+        char fallback_id[PSAM_LAYER_ID_MAX];
+        const char* layer_id = entry->layer_id[0] != '\0'
+            ? entry->layer_id
+            : (snprintf(fallback_id, sizeof(fallback_id), "layer-%u", i), fallback_id);
+        psam_error_t err = composite_add_layer_internal(
+            composite,
+            layer_id,
+            overlay,
+            entry->weight,
+            true
+        );
+        if (err != PSAM_OK) {
+            psam_destroy(overlay);
+            psam_composite_destroy(composite);
+            psamc_free(spec);
+            return NULL;
+        }
+    }
+
+    psamc_free(spec);
+    return composite;
 }
 
 static void accumulate_scores(

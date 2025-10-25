@@ -337,6 +337,30 @@ int psam_composite_predict(
 
 Blend predictions from the base model and every attached layer using their configured weights. Returns the number of predictions written.
 
+##### `psam_composite_save_file`
+
+```c
+int psam_composite_save_file(
+    const char* path,
+    const char* created_by,
+    const psamc_hyperparams_t* hyperparams,
+    float base_weight,
+    const char* base_model_path,
+    size_t layer_count,
+    const psam_composite_layer_file_t* layers
+);
+```
+
+Create a `.psamc` file that references an on-disk base model plus any number of overlay models. Each `layers[i]` entry specifies an ID, weight, and file path for the overlay. Paths are hashed at save time so integrity checks remain reproducible.
+
+##### `psam_composite_load_file`
+
+```c
+psam_composite_t* psam_composite_load_file(const char* path, bool verify_integrity);
+```
+
+Load a `.psamc` manifest, verify referenced hashes (if requested), and instantiate a layered composite with all referenced models opened and owned by the composite handle.
+
 #### Persistence
 
 ##### `psam_save`

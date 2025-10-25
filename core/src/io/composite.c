@@ -23,6 +23,9 @@ typedef int64_t psam_off_t;
 typedef off_t psam_off_t;
 #endif
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <errno.h>
+#include <time.h>
 
 /* External SHA-256 functions */
 extern int sha256_file(const char* path, uint8_t* out_hash);
@@ -64,6 +67,20 @@ typedef struct {
     float edge_dropout;
     uint8_t reserved[24];
 } psamc_hyperparams_disk_t;
+
+typedef struct {
+    float base_weight;
+    uint32_t base_ref_index;
+    uint32_t layer_count;
+    uint8_t reserved[20];
+} psamc_layer_section_header_t;
+
+typedef struct {
+    char layer_id[PSAM_LAYER_ID_MAX];
+    float weight;
+    uint32_t ref_index;
+    uint8_t reserved[24];
+} psamc_layer_entry_disk_t;
 
 /* ===== Helper utilities ===== */
 
@@ -224,6 +241,67 @@ static int write_config_section(FILE* f, const psamc_hyperparams_t* hyperparams)
     return 0;
 }
 
+static size_t layer_section_size(const psamc_topology_t* topology) {
+    if (!topology) {
+        return 0;
+    }
+
+    size_t size = sizeof(psamc_layer_section_header_t);
+    size += (size_t)topology->layer_count * sizeof(psamc_layer_entry_disk_t);
+    return size;
+}
+
+static void init_topology_defaults(psamc_topology_t* topology) {
+    if (!topology) {
+        return;
+    }
+    topology->base_weight = 1.0f;
+    topology->base_ref_index = 0;
+    topology->layer_count = 0;
+    topology->layers = NULL;
+}
+
+static void free_topology(psamc_topology_t* topology) {
+    if (!topology) {
+        return;
+    }
+    free(topology->layers);
+    topology->layers = NULL;
+    topology->layer_count = 0;
+    topology->base_weight = 1.0f;
+    topology->base_ref_index = 0;
+}
+
+static int write_layer_section(FILE* f, const psamc_topology_t* topology) {
+    if (!f || !topology) {
+        return -1;
+    }
+
+    psamc_layer_section_header_t header = {0};
+    header.base_weight = topology->base_weight;
+    header.base_ref_index = topology->base_ref_index;
+    header.layer_count = topology->layer_count;
+
+    if (fwrite(&header, sizeof(header), 1, f) != 1) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < topology->layer_count; ++i) {
+        psamc_layer_entry_disk_t disk = {0};
+        const psamc_layer_entry_t* entry = &topology->layers[i];
+        if (entry->layer_id[0] != '\0') {
+            snprintf(disk.layer_id, PSAM_LAYER_ID_MAX, "%s", entry->layer_id);
+        }
+        disk.weight = entry->weight;
+        disk.ref_index = entry->ref_index;
+        if (fwrite(&disk, sizeof(disk), 1, f) != 1) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static int compute_self_hash_excluding(const char* path, uint64_t offset, size_t length, sha256_hash_t* out_hash) {
     if (!path || !out_hash) {
         return -1;
@@ -340,16 +418,20 @@ int psamc_save(
     const char* path,
     const psam_model_t* base_model,
     const psamc_hyperparams_t* hyperparams,
-    const psamc_manifest_t* manifest
+    const psamc_manifest_t* manifest,
+    const psamc_topology_t* topology
 ) {
     (void)base_model; /* Placeholder for future embedded support */
 
-    if (!path || !hyperparams) {
+    if (!path || !hyperparams || !topology) {
         return -1;
     }
 
     uint32_t num_sections = 1; /* config */
     if (manifest) {
+        num_sections++;
+    }
+    if (topology) {
         num_sections++;
     }
 
@@ -372,6 +454,15 @@ int psamc_save(
         sections[section_index].offset = offset;
         sections[section_index].size = manifest_section_size_bytes;
         offset += manifest_section_size_bytes;
+        section_index++;
+    }
+
+    if (topology) {
+        sections[section_index].type = PSAMC_SECTION_LAYER;
+        sections[section_index].flags = 0;
+        sections[section_index].offset = offset;
+        sections[section_index].size = layer_section_size(topology);
+        offset += sections[section_index].size;
         section_index++;
     }
 
@@ -409,6 +500,12 @@ int psamc_save(
             return -1;
         }
         manifest_self_hash_offset_abs = sections[0].offset + rel_offset;
+    }
+
+    if (topology && write_layer_section(f, topology) != 0) {
+        fclose(f);
+        free(sections);
+        return -1;
     }
 
     if (write_config_section(f, hyperparams) != 0) {
@@ -591,6 +688,90 @@ static int read_config_section(FILE* f, const psamc_section_entry_t* section, ps
     return 0;
 }
 
+static int read_layer_section(FILE* f, const psamc_section_entry_t* section, psamc_topology_t* out_topology) {
+    if (!f || !section || !out_topology) {
+        return -1;
+    }
+
+    if (psam_fseeko(f, (psam_off_t)section->offset, SEEK_SET) != 0) {
+        return -1;
+    }
+
+    psamc_layer_section_header_t header;
+    if (fread(&header, sizeof(header), 1, f) != 1) {
+        return -1;
+    }
+
+    free_topology(out_topology);
+    out_topology->base_weight = header.base_weight;
+    out_topology->base_ref_index = header.base_ref_index;
+    out_topology->layer_count = header.layer_count;
+
+    if (header.layer_count == 0) {
+        out_topology->layers = NULL;
+        return 0;
+    }
+
+    out_topology->layers = calloc(header.layer_count, sizeof(psamc_layer_entry_t));
+    if (!out_topology->layers) {
+        out_topology->layer_count = 0;
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < header.layer_count; ++i) {
+        psamc_layer_entry_disk_t disk;
+        if (fread(&disk, sizeof(disk), 1, f) != 1) {
+            free_topology(out_topology);
+            return -1;
+        }
+
+        psamc_layer_entry_t* entry = &out_topology->layers[i];
+        snprintf(entry->layer_id, PSAM_LAYER_ID_MAX, "%s", disk.layer_id);
+        entry->weight = disk.weight;
+        entry->ref_index = disk.ref_index;
+    }
+
+    return 0;
+}
+
+static int synthesize_topology_from_manifest(const psamc_manifest_t* manifest, psamc_topology_t* topology) {
+    if (!manifest || !topology) {
+        return -1;
+    }
+
+    free_topology(topology);
+    topology->base_weight = 1.0f;
+    topology->base_ref_index = 0;
+
+    if (manifest->num_references <= 1) {
+        topology->layer_count = 0;
+        topology->layers = NULL;
+        return 0;
+    }
+
+    uint32_t overlays = manifest->num_references - 1;
+    topology->layers = calloc(overlays, sizeof(psamc_layer_entry_t));
+    if (!topology->layers) {
+        topology->layer_count = 0;
+        return -1;
+    }
+
+    topology->layer_count = overlays;
+    for (uint32_t i = 0; i < overlays; ++i) {
+        const psamc_model_ref_t* ref = &manifest->refs[i + 1];
+        psamc_layer_entry_t* entry = &topology->layers[i];
+        if (ref->model_id[0] != '\0') {
+            snprintf(entry->layer_id, PSAM_LAYER_ID_MAX, "%s", ref->model_id);
+        } else {
+            snprintf(entry->layer_id, PSAM_LAYER_ID_MAX, "layer-%u", i);
+        }
+        entry->weight = 1.0f;
+        entry->ref_index = i + 1;
+    }
+
+    return 0;
+}
+
 psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
     if (!path) {
         return NULL;
@@ -631,6 +812,9 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
 
     psamc_manifest_t manifest = {0};
     psamc_hyperparams_t config = {0};
+    psamc_topology_t topology;
+    init_topology_defaults(&topology);
+
     bool manifest_loaded = false;
     bool config_loaded = false;
     uint64_t manifest_hash_offset = 0;
@@ -655,6 +839,14 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
                 }
                 config_loaded = true;
                 break;
+            case PSAMC_SECTION_LAYER:
+                if (read_layer_section(f, section, &topology) != 0) {
+                    free(sections);
+                    fclose(f);
+                    free_manifest(&manifest);
+                    return NULL;
+                }
+                break;
             default:
                 /* Skip unknown sections for forward compatibility */
                 break;
@@ -665,43 +857,53 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
 
     if (!config_loaded) {
         free_manifest(&manifest);
+        free_topology(&topology);
+        fclose(f);
+        return NULL;
+    }
+
+    if (!manifest_loaded) {
+        free_topology(&topology);
         fclose(f);
         return NULL;
     }
 
     fclose(f);
 
-    if (manifest_loaded) {
-        sha256_hash_t computed;
-        if (compute_self_hash_excluding(path, manifest_hash_offset, PSAMC_SOURCE_HASH_SIZE, &computed) != 0) {
-            free_manifest(&manifest);
-            return NULL;
-        }
-
-        if (!sha256_equal(&computed, &manifest.self_hash)) {
-            fprintf(stderr, "ERROR: .psamc self-hash mismatch (file may be corrupted)\n");
-            free_manifest(&manifest);
-            return NULL;
-        }
-
-        if (verify_integrity && psamc_verify_manifest(&manifest) != 0) {
-            free_manifest(&manifest);
-            return NULL;
-        }
-    } else if (verify_integrity) {
-        fprintf(stderr, "ERROR: Manifest required for integrity verification.\n");
+    sha256_hash_t computed;
+    if (compute_self_hash_excluding(path, manifest_hash_offset, PSAMC_SOURCE_HASH_SIZE, &computed) != 0) {
         free_manifest(&manifest);
+        free_topology(&topology);
         return NULL;
+    }
+
+    if (!sha256_equal(&computed, &manifest.self_hash)) {
+        fprintf(stderr, "ERROR: .psamc self-hash mismatch (file may be corrupted)\\n");
+        free_manifest(&manifest);
+        free_topology(&topology);
+        return NULL;
+    }
+
+    if (verify_integrity && psamc_verify_manifest(&manifest) != 0) {
+        free_manifest(&manifest);
+        free_topology(&topology);
+        return NULL;
+    }
+
+    if (topology.layer_count == 0 || topology.base_ref_index >= manifest.num_references) {
+        synthesize_topology_from_manifest(&manifest, &topology);
     }
 
     psamc_composite_t* composite = calloc(1, sizeof(psamc_composite_t));
     if (!composite) {
         free_manifest(&manifest);
+        free_topology(&topology);
         return NULL;
     }
 
     composite->hyperparams = config;
     composite->manifest = manifest;
+    composite->topology = topology;
 
     return composite;
 }
@@ -711,6 +913,113 @@ void psamc_free(psamc_composite_t* composite) {
         return;
     }
     free_manifest(&composite->manifest);
+    free_topology(&composite->topology);
     free(composite);
+}
+
+static int fill_model_reference(psamc_model_ref_t* ref, const char* path, const char* model_id) {
+    if (!ref || !path) {
+        return -1;
+    }
+
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        fprintf(stderr, "ERROR: Failed to stat '%s': %s\n", path, strerror(errno));
+        return -1;
+    }
+
+    if (psamc_sha256_file(path, &ref->sha256) != 0) {
+        fprintf(stderr, "ERROR: Failed to hash '%s'\n", path);
+        return -1;
+    }
+
+    snprintf(ref->url, PSAMC_MAX_URL_LENGTH, "%s", path);
+    ref->size = (uint64_t)st.st_size;
+    if (model_id && model_id[0] != '\0') {
+        snprintf(ref->model_id, PSAMC_MAX_MODEL_ID, "%s", model_id);
+    } else {
+        ref->model_id[0] = '\0';
+    }
+    ref->version.major = 0;
+    ref->version.minor = 0;
+    ref->version.patch = 0;
+    return 0;
+}
+
+int psam_composite_save_file(
+    const char* path,
+    const char* created_by,
+    const psamc_hyperparams_t* hyperparams,
+    float base_weight,
+    const char* base_model_path,
+    size_t layer_count,
+    const psam_composite_layer_file_t* layers
+) {
+    if (!path || !base_model_path || (layer_count > 0 && !layers)) {
+        return -1;
+    }
+
+    psamc_manifest_t manifest;
+    memset(&manifest, 0, sizeof(manifest));
+    manifest.num_references = (uint32_t)(layer_count + 1);
+    manifest.refs = calloc(manifest.num_references, sizeof(psamc_model_ref_t));
+    if (!manifest.refs) {
+        return -1;
+    }
+
+    const psamc_hyperparams_t* config = hyperparams ? hyperparams : &PSAMC_PRESET_BALANCED_CONFIG;
+
+    if (fill_model_reference(&manifest.refs[0], base_model_path, "base") != 0) {
+        free(manifest.refs);
+        return -1;
+    }
+
+    psamc_topology_t topology;
+    init_topology_defaults(&topology);
+    topology.base_weight = base_weight;
+    topology.base_ref_index = 0;
+    topology.layer_count = (uint32_t)layer_count;
+    if (layer_count > 0) {
+        topology.layers = calloc(layer_count, sizeof(psamc_layer_entry_t));
+        if (!topology.layers) {
+            free(manifest.refs);
+            return -1;
+        }
+    }
+
+    for (size_t i = 0; i < layer_count; ++i) {
+        const psam_composite_layer_file_t* desc = &layers[i];
+        char generated_id[PSAM_LAYER_ID_MAX];
+        const char* layer_id = desc->id && desc->id[0] != '\0' ? desc->id : NULL;
+        if (!layer_id) {
+            snprintf(generated_id, sizeof(generated_id), "layer-%zu", i);
+            layer_id = generated_id;
+        }
+
+        if (fill_model_reference(&manifest.refs[i + 1], desc->path, layer_id) != 0) {
+            free(manifest.refs);
+            free_topology(&topology);
+            return -1;
+        }
+
+        psamc_layer_entry_t* entry = &topology.layers[i];
+        snprintf(entry->layer_id, PSAM_LAYER_ID_MAX, "%s", layer_id);
+        entry->weight = desc->weight;
+        entry->ref_index = (uint32_t)(i + 1);
+    }
+
+    manifest.created_timestamp = (uint64_t)time(NULL);
+    if (created_by && created_by[0] != '\0') {
+        snprintf(manifest.created_by, PSAMC_CREATED_BY_MAX, "%s", created_by);
+    } else {
+        snprintf(manifest.created_by, PSAMC_CREATED_BY_MAX, "libpsam");
+    }
+
+    int rc = psamc_save(path, NULL, config, &manifest, &topology);
+
+    free(manifest.refs);
+    free_topology(&topology);
+
+    return rc;
 }
 #include <sys/types.h>

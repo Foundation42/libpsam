@@ -1616,6 +1616,29 @@ static void compose_usage(void) {
     printf("Usage: psam compose --out composite.psamc --layer base.psam [--layer overlay.psam] [--created-by text]\n");
 }
 
+static char* derive_layer_id(const char* path, size_t index) {
+    if (!path) {
+        char fallback[32];
+        snprintf(fallback, sizeof(fallback), "layer-%zu", index);
+        return strdup(fallback);
+    }
+
+    const char* last_slash = strrchr(path, '/');
+#ifdef _WIN32
+    const char* last_backslash = strrchr(path, '\\');
+    if (!last_slash || (last_backslash && last_backslash > last_slash)) {
+        last_slash = last_backslash;
+    }
+#endif
+    const char* name = last_slash ? last_slash + 1 : path;
+    if (!name || name[0] == '\0') {
+        char fallback[32];
+        snprintf(fallback, sizeof(fallback), "layer-%zu", index);
+        return strdup(fallback);
+    }
+    return strdup(name);
+}
+
 static int compose_command(int argc, char** argv) {
     const char* out_path = NULL;
     const char* created_by = NULL;
@@ -1672,63 +1695,54 @@ static int compose_command(int argc, char** argv) {
         return EXIT_BAD_ARGS;
     }
 
-    psamc_manifest_t manifest;
-    memset(&manifest, 0, sizeof(manifest));
-    manifest.num_references = (uint32_t)layers.size;
-    manifest.refs = calloc(layers.size, sizeof(psamc_model_ref_t));
-    if (!manifest.refs) {
-        layer_list_free(&layers);
-        return EXIT_INTERNAL;
-    }
+    const char* base_path = layers.data[0].path;
+    size_t overlay_count = layers.size > 1 ? layers.size - 1 : 0;
+    psam_composite_layer_file_t* overlay_descs = NULL;
+    char** overlay_ids = NULL;
 
-    if (created_by) {
-        snprintf(manifest.created_by, PSAMC_CREATED_BY_MAX, "%s", created_by);
-    } else {
-        snprintf(manifest.created_by, PSAMC_CREATED_BY_MAX, "psam-cli/%s", CLI_VERSION);
-    }
-    manifest.created_timestamp = (uint64_t)time(NULL);
-
-    for (size_t i = 0; i < layers.size; ++i) {
-        psamc_model_ref_t* ref = &manifest.refs[i];
-        snprintf(ref->url, PSAMC_MAX_URL_LENGTH, "%s", layers.data[i].path);
-        struct stat st;
-        if (stat(layers.data[i].path, &st) != 0) {
-            print_error("failed to stat layer '%s': %s", layers.data[i].path, strerror(errno));
-            free(manifest.refs);
+    if (overlay_count > 0) {
+        overlay_descs = calloc(overlay_count, sizeof(psam_composite_layer_file_t));
+        overlay_ids = calloc(overlay_count, sizeof(char*));
+        if (!overlay_descs || !overlay_ids) {
+            free(overlay_descs);
+            free(overlay_ids);
             layer_list_free(&layers);
-            return EXIT_FILE_MISSING;
+            return EXIT_INTERNAL;
         }
-        ref->size = (uint64_t)st.st_size;
-        if (psamc_sha256_file(layers.data[i].path, &ref->sha256) != 0) {
-            print_error("failed to hash layer '%s'", layers.data[i].path);
-            free(manifest.refs);
-            layer_list_free(&layers);
-            return EXIT_CHECKSUM_FAIL;
+
+        for (size_t i = 0; i < overlay_count; ++i) {
+            overlay_descs[i].path = layers.data[i + 1].path;
+            overlay_descs[i].weight = 1.0f;
+            overlay_ids[i] = derive_layer_id(layers.data[i + 1].path, i);
+            overlay_descs[i].id = overlay_ids[i];
         }
-        if (layers.data[i].version) {
-            unsigned major = 0, minor = 0, patch = 0;
-            sscanf(layers.data[i].version, "%u.%u.%u", &major, &minor, &patch);
-            ref->version.major = (uint16_t)major;
-            ref->version.minor = (uint16_t)minor;
-            ref->version.patch = (uint16_t)patch;
-        } else {
-            ref->version.major = 0;
-            ref->version.minor = 0;
-            ref->version.patch = 0;
-        }
-        snprintf(ref->model_id, PSAMC_MAX_MODEL_ID, "layer-%zu", i);
     }
 
-    int rc = psamc_save(out_path, NULL, &hyper, &manifest);
-    free(manifest.refs);
+    int rc = psam_composite_save_file(
+        out_path,
+        created_by ? created_by : NULL,
+        &hyper,
+        1.0f,
+        base_path,
+        overlay_count,
+        overlay_descs
+    );
+
+    if (overlay_ids) {
+        for (size_t i = 0; i < overlay_count; ++i) {
+            free(overlay_ids[i]);
+        }
+        free(overlay_ids);
+    }
+    free(overlay_descs);
     layer_list_free(&layers);
 
     if (rc != 0) {
-        print_error("psamc_save failed");
+        print_error("psam composite save failed");
         return EXIT_INTERNAL;
     }
 
-    printf("{\"status\":\"ok\",\"composite\":\"%s\",\"layers\":%u}\n", out_path, manifest.num_references);
+    printf("{\"status\":\"ok\",\"composite\":\"%s\",\"layers\":%zu}\n", out_path, overlay_count + 1);
     return EXIT_OK;
 }
 

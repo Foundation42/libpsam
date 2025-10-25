@@ -33,10 +33,16 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "psam_export.h"
 
+#ifndef PSAM_LAYER_ID_MAX
+#define PSAM_LAYER_ID_MAX 64
+#endif
+
 typedef struct psam_model psam_model_t;
+typedef struct psam_composite psam_composite_t;
 
 #ifdef __cplusplus
 extern "C" {
@@ -185,9 +191,30 @@ typedef struct {
 } psamc_layer_meta_t;
 
 typedef struct {
+    char layer_id[PSAM_LAYER_ID_MAX];
+    float weight;
+    uint32_t ref_index; /* Index into manifest.refs */
+    uint8_t reserved[24];
+} psamc_layer_entry_t;
+
+typedef struct {
+    float base_weight;
+    uint32_t base_ref_index;      /* Index into manifest.refs */
+    uint32_t layer_count;
+    psamc_layer_entry_t* layers;  /* Overlay layers */
+} psamc_topology_t;
+
+typedef struct {
     psamc_manifest_t manifest;
     psamc_hyperparams_t hyperparams;
+    psamc_topology_t topology;
 } psamc_composite_t;
+
+typedef struct {
+    const char* id;      /* Optional human-readable layer id */
+    float weight;        /* Layer weight */
+    const char* path;    /* Path/URL to layer model */
+} psam_composite_layer_file_t;
 
 /* Preset configurations */
 static const psamc_hyperparams_t PSAMC_PRESET_FAST_CONFIG = {
@@ -239,7 +266,8 @@ PSAM_API int psamc_save(
     const char* path,
     const psam_model_t* base_model,
     const psamc_hyperparams_t* hyperparams,
-    const psamc_manifest_t* manifest
+    const psamc_manifest_t* manifest,
+    const psamc_topology_t* topology
 );
 
 /**
@@ -255,6 +283,18 @@ PSAM_API psamc_composite_t* psamc_load(const char* path, bool verify_integrity);
  * Release resources allocated by psamc_load
  */
 PSAM_API void psamc_free(psamc_composite_t* composite);
+
+PSAM_API psam_composite_t* psam_composite_load_file(const char* path, bool verify_integrity);
+
+PSAM_API int psam_composite_save_file(
+    const char* path,
+    const char* created_by,
+    const psamc_hyperparams_t* hyperparams,
+    float base_weight,
+    const char* base_model_path,
+    size_t layer_count,
+    const psam_composite_layer_file_t* layers
+);
 
 /**
  * Verify integrity of external references in manifest

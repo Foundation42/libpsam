@@ -97,6 +97,7 @@ topology_type: layered|sequenced|routed|ensemble
 - layers: [{name, model_ref, weight, activation_conditions?}]
 - routing_logic? (for routed types)
 - sequence_stages? (for sequenced types)
+- topology metadata is encoded in the `PSAMC_SECTION_LAYER` table so weights/IDs survive save/load
 
 [Model References]
 - Either embedded .psam models
@@ -170,6 +171,7 @@ const musicProducer = PSAM.sequenced()
 - Composite model save/load format
 - Unified prediction interface
 - Regression target: pull a few Shakespeare plays from `corpora/text/` to sanity-check that layered blends actually shift lexical focus (e.g., tragedies vs comedies).
+- CLI `psam compose` already emits balanced `.psamc` manifests (first `--layer` is base, subsequent entries are overlays with weight 1.0 by default); bindings can call `psam_composite_save_file` and `psam_composite_load_file` directly.
 
 ### **Phase 2: Advanced Topologies** 
 - `SequencedBuilder` - temporal staging
