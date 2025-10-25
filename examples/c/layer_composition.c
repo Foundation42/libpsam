@@ -13,9 +13,7 @@ int main() {
     printf("║          libpsam - Layer Composition Example              ║\n");
     printf("╚════════════════════════════════════════════════════════════╝\n\n");
 
-    const uint32_t VOCAB_SIZE = 100;
-    const uint32_t WINDOW = 8;
-    const uint32_t TOP_K = 5;
+    enum { VOCAB_SIZE = 100, WINDOW = 8, TOP_K = 5 };
 
     // Create base model (general domain)
     printf("📦 Creating base model (general domain)...\n");
@@ -47,6 +45,14 @@ int main() {
     psam_finalize_training(legal);
     printf("✓ Legal model trained\n\n");
 
+    // Build layered composite
+    printf("🧱 Building layered composite...\n");
+    psam_composite_t* layered = psam_create_layered(base);
+    if (!layered) {
+        fprintf(stderr, "❌ Failed to create layered composite\n");
+        goto cleanup;
+    }
+
     // Test context
     uint32_t context[] = {1};  // "the"
     size_t context_len = 1;
@@ -64,14 +70,14 @@ int main() {
 
     // Add medical layer
     printf("➕ Adding medical layer (weight: 1.5)...\n");
-    psam_error_t err = psam_add_layer(base, "medical", medical, 1.5);
+    psam_error_t err = psam_composite_add_layer(layered, "medical", medical, 1.5f);
     if (err != PSAM_OK) {
         fprintf(stderr, "❌ Failed to add layer: %s\n", psam_error_string(err));
         goto cleanup;
     }
 
     printf("🔮 Predictions (base + medical):\n");
-    num_preds = psam_predict(base, context, context_len, predictions, TOP_K);
+    num_preds = psam_composite_predict(layered, context, context_len, predictions, TOP_K);
 
     for (int i = 0; i < num_preds; i++) {
         printf("   %d. Token %u (%.3f)\n", i + 1,
@@ -81,14 +87,14 @@ int main() {
 
     // Update medical layer weight
     printf("⚙️  Updating medical layer weight to 2.0...\n");
-    err = psam_update_layer_weight(base, "medical", 2.0);
+    err = psam_composite_update_layer_weight(layered, "medical", 2.0f);
     if (err != PSAM_OK) {
         fprintf(stderr, "❌ Failed to update weight: %s\n", psam_error_string(err));
         goto cleanup;
     }
 
     printf("🔮 Predictions (base + medical 2.0×):\n");
-    num_preds = psam_predict(base, context, context_len, predictions, TOP_K);
+    num_preds = psam_composite_predict(layered, context, context_len, predictions, TOP_K);
 
     for (int i = 0; i < num_preds; i++) {
         printf("   %d. Token %u (%.3f)\n", i + 1,
@@ -98,20 +104,20 @@ int main() {
 
     // Remove medical, add legal
     printf("🔄 Switching to legal domain...\n");
-    err = psam_remove_layer(base, "medical");
+    err = psam_composite_remove_layer(layered, "medical");
     if (err != PSAM_OK) {
         fprintf(stderr, "❌ Failed to remove layer: %s\n", psam_error_string(err));
         goto cleanup;
     }
 
-    err = psam_add_layer(base, "legal", legal, 1.5);
+    err = psam_composite_add_layer(layered, "legal", legal, 1.5f);
     if (err != PSAM_OK) {
         fprintf(stderr, "❌ Failed to add layer: %s\n", psam_error_string(err));
         goto cleanup;
     }
 
     printf("🔮 Predictions (base + legal):\n");
-    num_preds = psam_predict(base, context, context_len, predictions, TOP_K);
+    num_preds = psam_composite_predict(layered, context, context_len, predictions, TOP_K);
 
     for (int i = 0; i < num_preds; i++) {
         printf("   %d. Token %u (%.3f)\n", i + 1,
@@ -120,18 +126,23 @@ int main() {
     printf("\n");
 
     // List active layers
-    const char* layer_ids[10];
-    int num_layers = psam_list_layers(base, layer_ids, 10);
+    psam_composite_layer_info_t infos[10];
+    int num_layers = psam_composite_list_layers(layered, infos, 10);
 
-    printf("📋 Active layers (%d):\n", num_layers);
-    for (int i = 0; i < num_layers; i++) {
-        printf("   - %s\n", layer_ids[i]);
+    if (num_layers < 0) {
+        fprintf(stderr, "❌ Failed to list layers: %s\n", psam_error_string(num_layers));
+    } else {
+        printf("📋 Active layers (%d):\n", num_layers);
+        for (int i = 0; i < num_layers; i++) {
+            printf("   - %s (weight %.2f)\n", infos[i].id, infos[i].weight);
+        }
+        printf("\n");
     }
-    printf("\n");
 
     printf("🎉 Layer composition demo complete!\n");
 
 cleanup:
+    psam_composite_destroy(layered);
     psam_destroy(base);
     psam_destroy(medical);
     psam_destroy(legal);

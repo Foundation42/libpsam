@@ -6,6 +6,7 @@ set(PSAM_SOURCES
     src/core/csr.c
     src/core/train.c
     src/core/infer.c
+    src/composition/composite_layered.c
     src/composition/layers.c
     src/io/serialize.c
     src/io/composite.c

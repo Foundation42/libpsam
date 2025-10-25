@@ -38,6 +38,11 @@ extern "C" {
 typedef struct psam_model psam_model_t;
 
 /**
+ * Opaque handle to a composite model builder/runtime.
+ */
+typedef struct psam_composite psam_composite_t;
+
+/**
  * Configuration for model creation.
  */
 typedef struct {
@@ -57,6 +62,23 @@ typedef struct {
  */
 #define PSAM_CREATED_BY_MAX 128
 #define PSAM_SOURCE_HASH_SIZE 32
+#define PSAM_LAYER_ID_MAX 64
+
+/**
+ * Supported composite topologies. Currently only layered builders are implemented,
+ * but the enum leaves room for sequenced/routed configurations.
+ */
+typedef enum {
+    PSAM_COMPOSITE_LAYERED = 1,
+} psam_composite_topology_t;
+
+/**
+ * Lightweight descriptor for inspecting layers attached to a composite.
+ */
+typedef struct {
+    char id[PSAM_LAYER_ID_MAX];
+    float weight;
+} psam_composite_layer_info_t;
 
 typedef struct {
     uint64_t created_timestamp;                /* Unix timestamp of model creation */
@@ -352,7 +374,81 @@ PSAM_API psam_error_t psam_explain(
     uint32_t candidate_token,
     psam_explain_term_t* out_terms,
     int max_terms,
-    psam_explain_result_t* result
+psam_explain_result_t* result
+);
+
+/* ============================ Composite Model Builders ============================ */
+
+/**
+ * Create a layered composite builder around a finalized base model.
+ * The composite does not take ownership of the base model; call psam_destroy
+ * separately if needed.
+ *
+ * @param base_model Finalized model that supplies baseline predictions
+ * @return Composite handle or NULL on allocation/validation failure
+ */
+PSAM_API psam_composite_t* psam_create_layered(psam_model_t* base_model);
+
+/**
+ * Destroy a composite builder/runtime. Does not destroy referenced models.
+ */
+PSAM_API void psam_composite_destroy(psam_composite_t* composite);
+
+/**
+ * Set the blending weight for the base model inside a composite.
+ * Default weight is 1.0.
+ */
+PSAM_API psam_error_t psam_composite_set_base_weight(psam_composite_t* composite, float weight);
+
+/**
+ * Add a named layer to the composite.
+ *
+ * @param composite Composite handle
+ * @param layer_id Unique identifier for the layer (up to PSAM_LAYER_ID_MAX chars)
+ * @param layer_model Finalized model to blend
+ * @param weight Relative blending weight for this layer
+ */
+PSAM_API psam_error_t psam_composite_add_layer(
+    psam_composite_t* composite,
+    const char* layer_id,
+    psam_model_t* layer_model,
+    float weight
+);
+
+/**
+ * Remove a layer by identifier.
+ */
+PSAM_API psam_error_t psam_composite_remove_layer(psam_composite_t* composite, const char* layer_id);
+
+/**
+ * Update the blending weight for an existing layer.
+ */
+PSAM_API psam_error_t psam_composite_update_layer_weight(
+    psam_composite_t* composite,
+    const char* layer_id,
+    float new_weight
+);
+
+/**
+ * List active layers in a composite. Copies up to max_layers entries into out_layers.
+ *
+ * @return Number of layers written, or negative error code.
+ */
+PSAM_API int psam_composite_list_layers(
+    const psam_composite_t* composite,
+    psam_composite_layer_info_t* out_layers,
+    size_t max_layers
+);
+
+/**
+ * Run inference through a composite topology and return blended predictions.
+ */
+PSAM_API int psam_composite_predict(
+    psam_composite_t* composite,
+    const uint32_t* context,
+    size_t context_len,
+    psam_prediction_t* out_preds,
+    size_t max_preds
 );
 
 /* ============================ Layer Composition ============================ */

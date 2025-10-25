@@ -4,8 +4,10 @@
 ```c
 // C API
 psam_composite_t* psam_create_layered(psam_model_t* base);
-void psam_add_layer(psam_composite_t* composite, const char* name, psam_model_t* layer, float weight);
-void psam_remove_layer(psam_composite_t* composite, const char* name);
+psam_error_t psam_composite_add_layer(psam_composite_t* composite, const char* name, psam_model_t* layer, float weight);
+psam_error_t psam_composite_remove_layer(psam_composite_t* composite, const char* name);
+psam_error_t psam_composite_set_base_weight(psam_composite_t* composite, float weight);
+int psam_composite_predict(psam_composite_t* composite, const uint32_t* ctx, size_t len, psam_prediction_t* out, size_t max_preds);
 ```
 
 ```javascript
@@ -167,6 +169,7 @@ const musicProducer = PSAM.sequenced()
 - `LayeredBuilder` - basic weighted layer mixing
 - Composite model save/load format
 - Unified prediction interface
+- Regression target: pull a few Shakespeare plays from `corpora/text/` to sanity-check that layered blends actually shift lexical focus (e.g., tragedies vs comedies).
 
 ### **Phase 2: Advanced Topologies** 
 - `SequencedBuilder` - temporal staging

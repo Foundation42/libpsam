@@ -266,7 +266,78 @@ if (err == PSAM_OK) {
 }
 ```
 
-#### Layer Composition
+#### Composite Builders
+
+Layered composites allow you to blend a finalized base model with additional domain-specific overlays at runtime. Composites are opaque handles that orchestrate multiple `psam_model_t` instances without copying their weights.
+
+##### `psam_create_layered`
+
+```c
+psam_composite_t* psam_create_layered(psam_model_t* base_model);
+```
+
+Create a layered composite around a finalized base model. Returns NULL if the base is missing or not finalized.
+
+##### `psam_composite_add_layer`
+
+```c
+psam_error_t psam_composite_add_layer(
+    psam_composite_t* composite,
+    const char* layer_id,
+    psam_model_t* layer_model,
+    float weight
+);
+```
+
+Attach a named layer with the provided blending weight. Models must share the same vocabulary size.
+
+##### `psam_composite_remove_layer`
+
+```c
+psam_error_t psam_composite_remove_layer(psam_composite_t* composite, const char* layer_id);
+```
+
+Detach a layer by ID.
+
+##### `psam_composite_update_layer_weight`
+
+```c
+psam_error_t psam_composite_update_layer_weight(
+    psam_composite_t* composite,
+    const char* layer_id,
+    float new_weight
+);
+```
+
+Adjust the weight of an attached layer.
+
+##### `psam_composite_list_layers`
+
+```c
+int psam_composite_list_layers(
+    const psam_composite_t* composite,
+    psam_composite_layer_info_t* out_layers,
+    size_t max_layers
+);
+```
+
+Copy up to `max_layers` layer descriptors (ID + weight) into `out_layers`. Returns the number of copies or a negative error code.
+
+##### `psam_composite_predict`
+
+```c
+int psam_composite_predict(
+    psam_composite_t* composite,
+    const uint32_t* context,
+    size_t context_len,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+);
+```
+
+Blend predictions from the base model and every attached layer using their configured weights. Returns the number of predictions written.
+
+#### Legacy Layer Composition
 
 ##### `psam_add_layer`
 

@@ -40,7 +40,7 @@
  * Layer composition node (linked list)
  */
 typedef struct layer_node {
-    char id[64];
+    char id[PSAM_LAYER_ID_MAX];
     psam_model_t* model;
     float weight;
     struct layer_node* next;
