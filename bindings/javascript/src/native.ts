@@ -104,6 +104,7 @@ function loadLibrary(libraryPath?: string): any {
         args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
         returns: FFIType.i32,
       },
+      psam_composite_load_file: { args: [FFIType.cstring, FFIType.i32], returns: FFIType.ptr },
       psam_save: { args: [FFIType.ptr, FFIType.cstring], returns: FFIType.i32 },
       psam_load: { args: [FFIType.cstring], returns: FFIType.ptr },
       psam_get_stats: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
@@ -129,6 +130,7 @@ function loadLibrary(libraryPath?: string): any {
       psam_composite_update_layer_weight: ['int32', ['pointer', 'string', 'float']],
       psam_composite_list_layers: ['int32', ['pointer', 'pointer', 'uint64']],
       psam_composite_predict: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'uint64']],
+      psam_composite_load_file: ['pointer', ['string', 'int']],
       psam_save: ['int32', ['pointer', 'string']],
       psam_load: ['pointer', ['string']],
       psam_get_stats: ['int32', ['pointer', 'pointer']],
@@ -413,10 +415,10 @@ export class LayeredCompositeNative implements LayeredComposite {
   private lib: any;
   private baseTopK: number;
 
-  constructor(lib: any, handle: any, base: PSAMNative) {
+  constructor(lib: any, handle: any, base?: PSAMNative, defaultTopK: number = 32) {
     this.lib = lib;
     this.handle = handle;
-    this.baseTopK = base.topK;
+    this.baseTopK = base ? base.topK : defaultTopK;
   }
 
   private get symbols() {
@@ -540,5 +542,15 @@ export class LayeredCompositeNative implements LayeredComposite {
     }
 
     return result.ids[0];
+  }
+
+  static loadFromFile(path: string, verifyIntegrity: boolean = true, libraryPath?: string): LayeredCompositeNative {
+    const lib = loadLibrary(libraryPath);
+    const symbols = lib.symbols || lib;
+    const handle = symbols.psam_composite_load_file(path, verifyIntegrity ? 1 : 0);
+    if (!handle) {
+      throw new Error(`Failed to load composite from ${path}`);
+    }
+    return new LayeredCompositeNative(lib, handle, undefined, 32);
   }
 }

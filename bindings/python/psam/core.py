@@ -75,6 +75,14 @@ class PSAMCompositeLayerInfo(ctypes.Structure):
     ]
 
 
+class PSAMCompositeLayerFile(ctypes.Structure):
+    _fields_ = [
+        ("id", ctypes.c_char_p),
+        ("weight", ctypes.c_float),
+        ("path", ctypes.c_char_p),
+    ]
+
+
 @dataclass
 class ExplainTerm:
     """Explanation term showing why a token was predicted"""
@@ -262,6 +270,20 @@ def _configure_library(lib):
         ctypes.c_size_t,
     ]
     lib.psam_composite_predict.restype = ctypes.c_int32
+
+    lib.psam_composite_load_file.argtypes = [ctypes.c_char_p, ctypes.c_bool]
+    lib.psam_composite_load_file.restype = ctypes.c_void_p
+
+    lib.psam_composite_save_file.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_float,
+        ctypes.c_char_p,
+        ctypes.c_size_t,
+        ctypes.POINTER(PSAMCompositeLayerFile),
+    ]
+    lib.psam_composite_save_file.restype = ctypes.c_int32
 
     # Persistence
     lib.psam_save.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
@@ -590,11 +612,14 @@ class PSAM:
 class LayeredComposite:
     """Runtime layered composite that blends a base model with overlays."""
 
-    def __init__(self, lib, handle, base: PSAM):
+    def __init__(self, lib, handle, base: Optional[PSAM] = None, default_top_k: int = 32):
         self._lib = lib
         self._handle = handle
         self._base = base
-        self._default_top_k = base.top_k
+        if base is not None:
+            self._default_top_k = base.top_k
+        else:
+            self._default_top_k = default_top_k
 
     def __del__(self):
         self.destroy()
@@ -677,3 +702,74 @@ class LayeredComposite:
         exp_scores = np.exp(logits)
         probs = exp_scores / np.sum(exp_scores)
         return int(np.random.choice(token_ids, p=probs))
+
+    @classmethod
+    def load(cls, path: str, verify_integrity: bool = True, default_top_k: int = 32) -> "LayeredComposite":
+        lib = _load_library()
+        handle = lib.psam_composite_load_file(path.encode("utf-8"), bool(verify_integrity))
+        if not handle:
+            raise PSAMError(f"Failed to load composite from {path}")
+        return cls(lib, handle, base=None, default_top_k=default_top_k)
+
+
+def load_composite(path: str, verify_integrity: bool = True, default_top_k: int = 32) -> LayeredComposite:
+    """
+    Load a layered composite (.psamc) from disk.
+    """
+    return LayeredComposite.load(path, verify_integrity=verify_integrity, default_top_k=default_top_k)
+
+
+def save_composite_manifest(
+    out_path: str,
+    base_model_path: str,
+    overlays: List[dict],
+    base_weight: float = 1.0,
+    created_by: Optional[str] = None,
+    hyperparams: Optional[ctypes.Structure] = None,
+) -> None:
+    """
+    Save a layered composite manifest referencing on-disk PSAM models.
+
+    Args:
+        out_path: Destination .psamc file.
+        base_model_path: Path to the base .psam model.
+        overlays: Iterable of dicts with keys {path, weight?, id?}.
+        base_weight: Optional scaling weight for the base model (default 1.0).
+        created_by: Optional metadata string recorded in the manifest.
+        hyperparams: Optional psamc hyperparameter structure (defaults to balanced preset).
+    """
+    lib = _load_library()
+    overlay_count = len(overlays)
+    layer_array = (PSAMCompositeLayerFile * overlay_count)() if overlay_count > 0 else None
+    encoded_ids: List[Optional[bytes]] = []
+    encoded_paths: List[bytes] = []
+
+    for i, desc in enumerate(overlays):
+        path = desc.get("path")
+        if not path:
+            raise ValueError(f"overlay #{i} missing 'path'")
+        weight = float(desc.get("weight", 1.0))
+        layer_id = desc.get("id")
+
+        path_bytes = path.encode("utf-8")
+        encoded_paths.append(path_bytes)
+        layer_array[i].path = path_bytes
+        layer_array[i].weight = weight
+
+        if layer_id:
+            id_bytes = layer_id.encode("utf-8")
+        else:
+            id_bytes = None
+        encoded_ids.append(id_bytes)
+        layer_array[i].id = id_bytes
+
+    result = lib.psam_composite_save_file(
+        out_path.encode("utf-8"),
+        created_by.encode("utf-8") if created_by else None,
+        ctypes.byref(hyperparams) if hyperparams else None,
+        ctypes.c_float(base_weight),
+        base_model_path.encode("utf-8"),
+        ctypes.c_size_t(overlay_count),
+        layer_array if layer_array is not None else None,
+    )
+    _check_error(result, "save_composite_manifest")

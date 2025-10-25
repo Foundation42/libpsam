@@ -12,6 +12,8 @@ from .core import (
     ExplainTerm,
     ExplainResult,
     CompositeLayerInfo,
+    load_composite,
+    save_composite_manifest,
     is_library_available,
 )
 
@@ -24,5 +26,7 @@ __all__ = [
     "ExplainTerm",
     "ExplainResult",
     "CompositeLayerInfo",
+    "load_composite",
+    "save_composite_manifest",
     "is_library_available",
 ]

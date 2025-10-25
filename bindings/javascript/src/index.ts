@@ -68,11 +68,20 @@ export async function createPSAM(
   }
 }
 
+export function loadComposite(
+  path: string,
+  verifyIntegrity: boolean = true,
+  libraryPath?: string
+): LayeredCompositeNative {
+  return LayeredCompositeNative.loadFromFile(path, verifyIntegrity, libraryPath);
+}
+
 /**
  * Default export for convenience
  */
 export default {
   createPSAM,
+  loadComposite,
   getBestImplementation,
   PSAMNative,
   LayeredCompositeNative,
