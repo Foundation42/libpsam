@@ -5,7 +5,7 @@ import { Play, Zap, Info, RefreshCw, Settings } from 'lucide-react';
 interface PSAMInstance {
   trainBatch(tokens: number[]): void;
   finalizeTraining(): void;
-  predict(context: number[], maxPredictions?: number): { ids: number[]; scores: Float32Array; probabilities: Float32Array };
+  predict(context: number[], maxPredictions?: number, temperature?: number): { ids: number[]; scores: Float32Array; probabilities: Float32Array };
   explain?(context: number[], candidateToken: number, maxTerms?: number): {
     candidate: number;
     total: number;
@@ -113,7 +113,7 @@ const PSAMWasmDemo = () => {
         return;
       }
 
-      const result = psam.predict(contextTokens.slice(-contextWindow), topK);
+      const result = psam.predict(contextTokens.slice(-contextWindow), topK, temperature);
 
       // Use calibrated probabilities from sampler
       const preds = result.ids.map((id, i) => ({
@@ -241,7 +241,7 @@ const PSAMWasmDemo = () => {
               psam_finalize(handle);
             },
 
-            predict: (context: number[], maxPredictions = 10) => {
+            predict: (context: number[], maxPredictions = 10, temp = 1.0) => {
               const contextArray = new Uint32Array(context);
               const contextPtr = Module._malloc(contextArray.length * 4);
               Module.HEAPU32.set(contextArray, contextPtr / 4);
@@ -252,7 +252,7 @@ const PSAMWasmDemo = () => {
               const samplerPtr = Module._malloc(24);
               const samplerView = new DataView(Module.HEAPU8.buffer, samplerPtr, 24);
               samplerView.setUint32(0, 1, true); // PSAM_LOGIT_ZSCORE
-              samplerView.setFloat32(4, temperature, true);
+              samplerView.setFloat32(4, temp, true); // Use passed temperature parameter
               samplerView.setInt32(8, 0, true); // top_k (0 = use model default)
               samplerView.setFloat32(12, 0.95, true); // top_p
               samplerView.setBigUint64(16, BigInt(Math.floor(Math.random() * 0xFFFFFFFF)), true);
@@ -338,9 +338,9 @@ const PSAMWasmDemo = () => {
               };
             },
 
-            sample: (context: number[], _temperature = 1.0) => {
-              // Temperature is already handled by predict() via sampler
-              const result = this.predict(context, 10);
+            sample: (context: number[], temp = 1.0) => {
+              // Pass temperature to predict
+              const result = this.predict(context, 10, temp);
               if (result.ids.length === 0) return 0;
 
               // Use calibrated probabilities from sampler
@@ -482,7 +482,7 @@ const PSAMWasmDemo = () => {
     let currentInput = inferenceInput;
 
     for (let i = 0; i < 10; i++) {
-      const result = psam.predict(currentTokens.slice(-contextWindow), topK);
+      const result = psam.predict(currentTokens.slice(-contextWindow), topK, temperature);
 
       if (result.ids.length === 0) break;
 
