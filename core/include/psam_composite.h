@@ -41,8 +41,20 @@
 #define PSAM_LAYER_ID_MAX 64
 #endif
 
+/* Forward declarations */
 typedef struct psam_model psam_model_t;
 typedef struct psam_composite psam_composite_t;
+
+/* Logit transform modes (from psam.h) */
+#ifndef PSAM_LOGIT_TRANSFORM_DEFINED
+#define PSAM_LOGIT_TRANSFORM_DEFINED
+typedef enum {
+    PSAM_LOGIT_RAW = 0,
+    PSAM_LOGIT_ZSCORE = 1,
+    PSAM_LOGIT_CALIBRATED = 2,
+    PSAM_LOGIT_LEGACY = 3
+} psam_logit_transform_t;
+#endif
 
 #ifdef __cplusplus
 extern "C" {

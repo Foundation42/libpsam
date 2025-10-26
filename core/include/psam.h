@@ -76,12 +76,15 @@ typedef enum {
  * Logit transform modes for sampling.
  * Controls how raw scores are normalized before temperature scaling.
  */
+#ifndef PSAM_LOGIT_TRANSFORM_DEFINED
+#define PSAM_LOGIT_TRANSFORM_DEFINED
 typedef enum {
     PSAM_LOGIT_RAW = 0,        /* Raw scores (shifted by max only for numerical stability) */
     PSAM_LOGIT_ZSCORE = 1,     /* Per-step z-score standardization (default, temp 0.1-2.0 works intuitively) */
     PSAM_LOGIT_CALIBRATED = 2, /* Use composite calibration if present */
     PSAM_LOGIT_LEGACY = 3      /* Preserves current "very hot" temps (10-100 range) */
 } psam_logit_transform_t;
+#endif
 
 /**
  * Sampler configuration for inference.
