@@ -216,6 +216,15 @@ typedef struct {
     const char* path;    /* Path/URL to layer model */
 } psam_composite_layer_file_t;
 
+static inline psam_composite_layer_file_t psam_composite_layer_file(
+    const char* id,
+    float weight,
+    const char* path
+) {
+    psam_composite_layer_file_t desc = { id, weight, path };
+    return desc;
+}
+
 /* Preset configurations */
 static const psamc_hyperparams_t PSAMC_PRESET_FAST_CONFIG = {
     .preset = PSAMC_PRESET_FAST,
