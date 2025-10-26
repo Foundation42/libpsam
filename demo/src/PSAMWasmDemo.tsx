@@ -5,7 +5,7 @@ import { Play, Zap, Info, RefreshCw, Settings } from 'lucide-react';
 interface PSAMInstance {
   trainBatch(tokens: number[]): void;
   finalizeTraining(): void;
-  predict(context: number[], maxPredictions?: number): { ids: number[]; scores: Float32Array };
+  predict(context: number[], maxPredictions?: number): { ids: number[]; scores: Float32Array; probabilities: Float32Array };
   explain?(context: number[], candidateToken: number, maxTerms?: number): {
     candidate: number;
     total: number;
@@ -115,18 +115,12 @@ const PSAMWasmDemo = () => {
 
       const result = psam.predict(contextTokens.slice(-contextWindow), topK);
 
-      // Calculate probabilities with temperature
-      const logits = Array.from(result.scores).map(s => s / temperature);
-      const maxLogit = Math.max(...logits);
-      const expScores = logits.map(l => Math.exp(l - maxLogit));
-      const sumExp = expScores.reduce((a, b) => a + b, 0);
-      const probs = expScores.map(e => e / sumExp);
-
+      // Use calibrated probabilities from sampler
       const preds = result.ids.map((id, i) => ({
         token: id,
         word: vocab[id] || `<${id}>`,
         score: result.scores[i],
-        probability: probs[i]
+        probability: result.probabilities[i]
       }));
 
       setPredictions(preds);
@@ -254,24 +248,37 @@ const PSAMWasmDemo = () => {
 
               const predsPtr = Module._malloc(maxPredictions * 12);
 
-              const psam_predict = Module.cwrap('psam_predict', 'number', ['number', 'number', 'number', 'number', 'number']);
-              const numPreds = psam_predict(handle, contextPtr, contextArray.length, predsPtr, maxPredictions);
+              // Create sampler config with z-score normalization
+              const samplerPtr = Module._malloc(24);
+              const samplerView = new DataView(Module.HEAPU8.buffer, samplerPtr, 24);
+              samplerView.setUint32(0, 1, true); // PSAM_LOGIT_ZSCORE
+              samplerView.setFloat32(4, temperature, true);
+              samplerView.setInt32(8, 0, true); // top_k (0 = use model default)
+              samplerView.setFloat32(12, 0.95, true); // top_p
+              samplerView.setBigUint64(16, BigInt(Math.floor(Math.random() * 0xFFFFFFFF)), true);
+
+              const psam_predict_with_sampler = Module.cwrap('psam_predict_with_sampler', 'number',
+                ['number', 'number', 'number', 'number', 'number', 'number']);
+              const numPreds = psam_predict_with_sampler(handle, contextPtr, contextArray.length, samplerPtr, predsPtr, maxPredictions);
 
               const ids: number[] = [];
               const scores: number[] = [];
+              const probs: number[] = [];
 
               if (numPreds > 0) {
                 for (let i = 0; i < numPreds; i++) {
                   const offset = predsPtr / 4 + i * 3;
                   ids.push(Module.HEAPU32[offset]);
                   scores.push(Module.HEAPF32[offset + 1]);
+                  probs.push(Module.HEAPF32[offset + 2]);
                 }
               }
 
               Module._free(contextPtr);
               Module._free(predsPtr);
+              Module._free(samplerPtr);
 
-              return { ids, scores: new Float32Array(scores) };
+              return { ids, scores: new Float32Array(scores), probabilities: new Float32Array(probs) };
             },
 
             explain: (context: number[], candidateToken: number, maxTerms = 32) => {
@@ -331,16 +338,13 @@ const PSAMWasmDemo = () => {
               };
             },
 
-            sample: (context: number[], temperature = 1.0) => {
+            sample: (context: number[], _temperature = 1.0) => {
+              // Temperature is already handled by predict() via sampler
               const result = this.predict(context, 10);
               if (result.ids.length === 0) return 0;
 
-              // Apply temperature and softmax
-              const logits = Array.from(result.scores).map(s => s / temperature);
-              const maxLogit = Math.max(...logits);
-              const expScores = logits.map(l => Math.exp(l - maxLogit));
-              const sumExp = expScores.reduce((a, b) => a + b, 0);
-              const probs = expScores.map(e => e / sumExp);
+              // Use calibrated probabilities from sampler
+              const probs = Array.from(result.probabilities);
 
               // Sample from distribution
               const rand = Math.random();
@@ -482,12 +486,8 @@ const PSAMWasmDemo = () => {
 
       if (result.ids.length === 0) break;
 
-      // Calculate probabilities with temperature
-      const logits = Array.from(result.scores).map(s => s / temperature);
-      const maxLogit = Math.max(...logits);
-      const expScores = logits.map(l => Math.exp(l - maxLogit));
-      const sumExp = expScores.reduce((a, b) => a + b, 0);
-      const probs = expScores.map(e => e / sumExp);
+      // Use calibrated probabilities from sampler
+      const probs = Array.from(result.probabilities);
 
       // Sample from distribution
       const rand = Math.random();
