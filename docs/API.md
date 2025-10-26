@@ -361,6 +361,8 @@ psam_composite_t* psam_composite_load_file(const char* path, bool verify_integri
 
 Load a `.psamc` manifest, verify referenced hashes (if requested), and instantiate a layered composite with all referenced models opened and owned by the composite handle.
 
+> **Harness:** `scripts/shakespeare_harness.py` shows these functions in context—training tragedy/comedy overlays, emitting blended `.psamc` files with `psam_composite_save_file`, and reloading them via `psam_composite_load_file` for regression testing.
+
 #### Persistence
 
 ##### `psam_save`

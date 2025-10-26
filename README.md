@@ -139,6 +139,19 @@ psam explain \
 
 Swap in `corpora/text/Luna.txt` or `TheAnomaly.txt` to exercise longer sequences or story-like text.
 
+### Shakespeare Regression Harness
+
+Want a richer sanity check? The repo ships Folger Shakespeare plays plus a harness that trains tragedy/comedy overlays, saves layered composites, and prints sample predictions so we can spot regressions quickly:
+
+```bash
+# Ensure libpsam is built and available (LIBPSAM_PATH if needed)
+python scripts/shakespeare_harness.py \
+  --prompt "to be or not to be" \
+  --out-dir artifacts/shakespeare
+```
+
+The script caches overlay models under `artifacts/shakespeare/overlays/` and emits `.psamc` composites (tragedy, comedy, mixed) so you can inspect or reuse them with the CLI/bindings.
+
 ## Installation
 
 ### Building the C Library
