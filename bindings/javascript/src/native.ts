@@ -15,6 +15,8 @@ import type {
   LayeredComposite,
   CompositeLayerInfo,
   PSAM,
+  SaveCompositeOptions,
+  CompositeLayerDescriptor,
 } from './types.js';
 
 // Platform-specific FFI loading
@@ -34,6 +36,101 @@ try {
   } catch {
     console.warn('No FFI implementation available. Native bindings require Bun or ffi-napi.');
   }
+}
+
+export function loadComposite(
+  path: string,
+  verifyIntegrity: boolean = true,
+  libraryPath?: string
+): LayeredCompositeNative {
+  return LayeredCompositeNative.loadFromFile(path, verifyIntegrity, libraryPath);
+}
+
+export function saveComposite(options: SaveCompositeOptions, libraryPath?: string): void {
+  if (!options || !options.outPath || !options.baseModelPath) {
+    throw new Error('saveComposite requires outPath and baseModelPath');
+  }
+
+  if (isBun) {
+    throw new Error('saveComposite is currently only supported on Node.js builds');
+  }
+
+  const ref = ensureRefModule();
+  if (!ref) {
+    throw new Error('ref-napi is required to use saveComposite (install ffi-napi and ref-napi)');
+  }
+
+  const lib = loadLibrary(libraryPath);
+  const symbols = lib.symbols || lib;
+  if (!symbols.psam_composite_save_file) {
+    throw new Error('libpsam does not export psam_composite_save_file');
+  }
+
+  const layers = options.layers ?? [];
+  const layerCount = layers.length;
+  let layerBuffer: Buffer | null = null;
+
+  const allocatedStrings: Buffer[] = [];
+
+  if (layerCount > 0) {
+    layerBuffer = Buffer.alloc(layerCount * SIZE_OF_LAYER_FILE_STRUCT);
+
+    for (let i = 0; i < layerCount; i++) {
+      const desc: CompositeLayerDescriptor = layers[i];
+      if (!desc || !desc.path) {
+        throw new Error(`overlay #${i} is missing a path`);
+      }
+
+      const idPtr = desc.id ? ref.allocCString(desc.id) : ref.NULL;
+      const pathPtr = ref.allocCString(desc.path);
+      if (idPtr && idPtr !== ref.NULL) {
+        allocatedStrings.push(idPtr);
+      }
+      allocatedStrings.push(pathPtr);
+
+      const weight = typeof desc.weight === 'number' ? desc.weight : 1.0;
+      const offset = i * SIZE_OF_LAYER_FILE_STRUCT;
+      ref.writePointer(layerBuffer, offset, idPtr);
+      if (is64Bit) {
+        layerBuffer.writeFloatLE(weight, offset + 8);
+        layerBuffer.writeUInt32LE(0, offset + 12);
+        ref.writePointer(layerBuffer, offset + 16, pathPtr);
+      } else {
+        layerBuffer.writeFloatLE(weight, offset + 4);
+        ref.writePointer(layerBuffer, offset + 8, pathPtr);
+      }
+    }
+  }
+
+  const result = symbols.psam_composite_save_file(
+    options.outPath,
+    options.createdBy ?? null,
+    null,
+    options.baseWeight ?? 1.0,
+    options.baseModelPath,
+    BigInt(layerCount),
+    layerBuffer ?? ref.NULL,
+  );
+  checkError(result, 'saveComposite', lib);
+}
+
+let refModule: any = null;
+function ensureRefModule(): any {
+  if (isBun) {
+    return null;
+  }
+  if (refModule) {
+    return refModule;
+  }
+  try {
+    const nodeRequire = Function('return typeof require !== "undefined" ? require : null;')();
+    if (nodeRequire) {
+      refModule = nodeRequire('ref-napi');
+    }
+  } catch {
+    refModule = null;
+  }
+  return refModule;
 }
 
 /* ============================ Error Handling ============================ */
@@ -64,6 +161,8 @@ const EXPLAIN_TERM_SIZE = 24; // sizeof(psam_explain_term_t)
 const EXPLAIN_RESULT_SIZE = 16; // sizeof(psam_explain_result_t)
 const PSAM_LAYER_ID_MAX = 64;
 const COMPOSITE_LAYER_INFO_SIZE = 68;
+const is64Bit = process.arch === 'x64' || process.arch === 'arm64';
+const SIZE_OF_LAYER_FILE_STRUCT = is64Bit ? 24 : 12;
 const textDecoder = new TextDecoder();
 
 let cachedLib: any = null;
@@ -105,6 +204,18 @@ function loadLibrary(libraryPath?: string): any {
         returns: FFIType.i32,
       },
       psam_composite_load_file: { args: [FFIType.cstring, FFIType.i32], returns: FFIType.ptr },
+      psam_composite_save_file: {
+        args: [
+          FFIType.cstring,
+          FFIType.cstring,
+          FFIType.ptr,
+          FFIType.f32,
+          FFIType.cstring,
+          FFIType.u64,
+          FFIType.ptr,
+        ],
+        returns: FFIType.i32,
+      },
       psam_save: { args: [FFIType.ptr, FFIType.cstring], returns: FFIType.i32 },
       psam_load: { args: [FFIType.cstring], returns: FFIType.ptr },
       psam_get_stats: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
@@ -131,6 +242,10 @@ function loadLibrary(libraryPath?: string): any {
       psam_composite_list_layers: ['int32', ['pointer', 'pointer', 'uint64']],
       psam_composite_predict: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'uint64']],
       psam_composite_load_file: ['pointer', ['string', 'int']],
+      psam_composite_save_file: [
+        'int32',
+        ['string', 'string', 'pointer', 'float', 'string', 'uint64', 'pointer'],
+      ],
       psam_save: ['int32', ['pointer', 'string']],
       psam_load: ['pointer', ['string']],
       psam_get_stats: ['int32', ['pointer', 'pointer']],

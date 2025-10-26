@@ -129,6 +129,8 @@ export interface ModelStats {
 export interface PersistenceOptions {
   /** File format (currently only 'binary' is supported by native lib) */
   format?: 'binary';
+  /** Optional creator string recorded in composite manifests */
+  createdBy?: string;
 }
 
 /**
@@ -206,4 +208,20 @@ export interface LayeredComposite {
   predict(context: TokenId[], maxPredictions?: number): InferenceResult;
   sample(context: TokenId[], temperature?: number): TokenId;
   destroy(): void;
+  save?(options: SaveCompositeOptions): void;
+}
+
+export interface CompositeLayerDescriptor {
+  id?: string;
+  weight?: number;
+  path: string;
+}
+
+export interface SaveCompositeOptions {
+  outPath: string;
+  baseModelPath: string;
+  baseWeight?: number;
+  layers: CompositeLayerDescriptor[];
+  createdBy?: string;
+  hyperparamsPreset?: 'balanced' | 'fast' | 'accurate' | 'tiny';
 }

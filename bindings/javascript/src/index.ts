@@ -10,7 +10,8 @@ export * from './types.js';
 export { PSAMNative, LayeredCompositeNative, isNativeAvailable } from './native.js';
 export { PSAMWASM, isWASMAvailable } from './wasm.js';
 
-import { PSAMNative, LayeredCompositeNative, isNativeAvailable } from './native.js';
+import { PSAMNative, LayeredCompositeNative, isNativeAvailable, saveComposite as nativeSaveComposite } from './native.js';
+import type { SaveCompositeOptions } from './types.js';
 import { PSAMWASM, isWASMAvailable } from './wasm.js';
 import type { TrainablePSAM } from './types.js';
 
@@ -76,12 +77,17 @@ export function loadComposite(
   return LayeredCompositeNative.loadFromFile(path, verifyIntegrity, libraryPath);
 }
 
+export function saveComposite(options: SaveCompositeOptions, libraryPath?: string): void {
+  nativeSaveComposite(options, libraryPath);
+}
+
 /**
  * Default export for convenience
  */
 export default {
   createPSAM,
   loadComposite,
+  saveComposite,
   getBestImplementation,
   PSAMNative,
   LayeredCompositeNative,
