@@ -41,11 +41,16 @@ uint32_t tokens[] = {1, 2, 3, 4, 5};
 psam_train_batch(model, tokens, 5);
 psam_finalize_training(model);
 
-// Predict
+// Predict with temperature control
 uint32_t context[] = {1, 2, 3};
-int context_len = 3;
+psam_sampler_t sampler = {
+    .transform = PSAM_LOGIT_ZSCORE,
+    .temperature = 0.8f,
+    .top_p = 0.95f,
+    .seed = 42
+};
 psam_prediction_t predictions[10];
-int n = psam_predict(model, context, context_len, predictions, 10);
+int n = psam_predict_with_sampler(model, context, 3, &sampler, predictions, 10);
 
 // Save/load
 psam_save(model, "model.psam");
@@ -88,9 +93,9 @@ A lightweight CLI is built alongside the library (executable name `psam`). It wr
 
 ```
 psam build   --input data.txt --out model.psam --vocab-out vocab.tsv
-psam predict --model model.psam --ctx-ids 1,2,3 --top_k 5 --pretty
+psam predict --model model.psam --prompt "the cat" --vocab vocab.tsv --top_k 5 --pretty
 psam explain --model model.psam --ctx-ids 10,77,21 --candidate-id 42 --topN 8
-psam generate --model model.psam --context "the cat" --vocab vocab.tsv --count 20 --top_k 16 --top_p 0.95 --seed 42
+psam generate --model model.psam --prompt "the cat" --vocab vocab.tsv --count 20 --temperature 1.0 --top_p 0.95 --seed 42
 psam analyze --model model.psam
 psam compose --out composite.psamc --layer base.psam --layer domain.psam
 psam inspect --model composite.psamc
@@ -98,7 +103,9 @@ psam tokenize --vocab vocab.tsv --context "she sells sea shells"
 psam ids      --vocab vocab.tsv --ids 12,44,77
 ```
 
-Flags are consistent across commands (`--model`, `--ctx-ids`, `--context`, `--top_k`, `--pretty`, etc.). All commands emit JSON by default; pass `--pretty` for human-readable output. Exit codes follow `0` (ok), `2` (bad args), `3` (file missing), `4` (checksum failed), `5` (internal error).
+Flags are consistent across commands (`--model`, `--prompt`, `--temperature`, `--top_k`, `--top_p`, `--pretty`, etc.). All commands emit JSON by default; pass `--pretty` for human-readable output. Exit codes follow `0` (ok), `2` (bad args), `3` (file missing), `4` (checksum failed), `5` (internal error).
+
+**Temperature & Sampling (v1.1+):** The CLI supports intuitive temperature control (0.1-2.0 range) via z-score normalization. Use `--temperature 0.5` for deterministic output, `--temperature 1.5` for creative variation. See **[Sampler Guide](./docs/Sampler.md)** for details.
 
 ### Sample Corpora
 
@@ -201,6 +208,7 @@ export LIBPSAM_PATH=/path/to/libpsam/build/libpsam.so
 
 - **[How PSAM Works](./docs/PSAM.md)** - Theory, PPMI, IDF, architecture
 - **[API Reference](./docs/API.md)** - Complete API documentation
+- **[Sampler Guide](./docs/Sampler.md)** - Temperature control and sampling configuration
 - **[.psamc Format](./docs/PSAMC_FORMAT.md)** - Composite model format with integrity verification
 - **[Build Guide](./docs/BUILDING.md)** - Build instructions
 - **[Core C Library](./core/README.md)** - C API reference

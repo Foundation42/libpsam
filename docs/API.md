@@ -71,8 +71,42 @@ typedef struct {
     float    total_score;     // Final sampler score (bias + contributions)
     float    bias_score;      // Baseline bias score for the candidate
     int32_t  term_count;      // Total contributing terms discovered
+    float    z_logit;         // Z-score normalized logit (0.0 if unavailable)
+    float    prob;            // Post-softmax probability (0.0 if unavailable)
 } psam_explain_result_t;
 ```
+
+#### `psam_logit_transform_t`
+
+```c
+typedef enum {
+    PSAM_LOGIT_RAW = 0,        // Raw scores (max subtraction only)
+    PSAM_LOGIT_ZSCORE = 1,     // Z-score normalization (default)
+    PSAM_LOGIT_CALIBRATED = 2, // Use composite calibration
+    PSAM_LOGIT_LEGACY = 3      // Legacy behavior (high temps 10-100)
+} psam_logit_transform_t;
+```
+
+Controls how raw prediction scores are normalized before applying temperature and softmax.
+
+- **ZSCORE** (default): Applies per-step z-score normalization `(score - mean) / std`, making temperature in the range 0.1-2.0 work intuitively across different models and contexts
+- **RAW**: No normalization, just numerical stability (max subtraction)
+- **LEGACY**: Preserves pre-1.1 behavior where temperatures of 10-100 were needed
+- **CALIBRATED**: Reserved for future composite calibration features
+
+#### `psam_sampler_t`
+
+```c
+typedef struct {
+    psam_logit_transform_t transform; // Logit preprocessing (default: ZSCORE)
+    float temperature;                // Sampling temperature (default: 1.0)
+    int   top_k;                      // Top-k filtering (default: 0 = model default)
+    float top_p;                      // Nucleus sampling (default: 0.95)
+    uint64_t seed;                    // Random seed (default: 42)
+} psam_sampler_t;
+```
+
+Configuration for inference sampling. When passed to `psam_predict_with_sampler()`, controls how scores are transformed into probabilities.
 
 #### `psam_stats_t`
 
@@ -195,6 +229,51 @@ int psam_predict(
 Generate predictions for a given context.
 
 **Returns:** Number of predictions (≥0), or negative error code
+
+##### `psam_predict_with_sampler`
+
+```c
+int psam_predict_with_sampler(
+    psam_model_t* model,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+);
+```
+
+Generate predictions with explicit sampler configuration. Applies logit normalization (z-score by default) and populates the `calibrated_prob` field with post-softmax probabilities.
+
+**Parameters:**
+- `model` - Trained model (must be finalized)
+- `context` - Array of context token IDs
+- `context_len` - Number of tokens in context
+- `sampler` - Sampler configuration (`NULL` uses defaults: z-score, temp=1.0, top_p=0.95)
+- `out_preds` - Output buffer for predictions
+- `max_preds` - Maximum predictions to return
+
+**Returns:** Number of predictions (≥0), or negative error code
+
+**Example:**
+```c
+psam_sampler_t sampler = {
+    .transform = PSAM_LOGIT_ZSCORE,
+    .temperature = 0.7f,
+    .top_k = 0,      // use model default
+    .top_p = 0.9f,
+    .seed = 42
+};
+
+psam_prediction_t preds[32];
+int n = psam_predict_with_sampler(model, context, 3, &sampler, preds, 32);
+for (int i = 0; i < n; i++) {
+    printf("Token %u: score=%.2f prob=%.4f\n",
+           preds[i].token, preds[i].score, preds[i].calibrated_prob);
+}
+```
+
+**See also:** [Sampler Guide](Sampler.md) for details on temperature ranges and transform modes.
 
 ##### `psam_explain`
 
@@ -336,6 +415,37 @@ int psam_composite_predict(
 ```
 
 Blend predictions from the base model and every attached layer using their configured weights. Returns the number of predictions written.
+
+##### `psam_composite_predict_with_sampler`
+
+```c
+int psam_composite_predict_with_sampler(
+    psam_composite_t* composite,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+);
+```
+
+Blend predictions from multiple layers with per-layer weight/bias, then apply logit normalization and temperature sampling. If `sampler` is `NULL`, uses the composite's default sampler configuration (loaded from `.psamc` or initialized to zscore defaults).
+
+**Returns:** Number of predictions (≥0), or negative error code
+
+##### `psam_composite_update_layer_bias`
+
+```c
+psam_error_t psam_composite_update_layer_bias(
+    psam_composite_t* composite,
+    const char* layer_id,
+    float new_bias
+);
+```
+
+Update the bias offset for a specific layer in the composite. The bias is added to scores after weight scaling: `final_score = weight * score + bias`.
+
+**Returns:** `PSAM_OK` on success, `PSAM_ERR_LAYER_NOT_FOUND` if layer ID not found
 
 ##### `psam_composite_save_file`
 
