@@ -17,7 +17,9 @@ import type {
   PSAM,
   SaveCompositeOptions,
   CompositeLayerDescriptor,
+  SamplerConfig,
 } from './types.js';
+import { LogitTransform } from './types.js';
 
 // Platform-specific FFI loading
 let FFI: any = null;
@@ -160,7 +162,8 @@ const STATS_SIZE = 32; // sizeof(psam_stats_t)
 const EXPLAIN_TERM_SIZE = 24; // sizeof(psam_explain_term_t)
 const EXPLAIN_RESULT_SIZE = 16; // sizeof(psam_explain_result_t)
 const PSAM_LAYER_ID_MAX = 64;
-const COMPOSITE_LAYER_INFO_SIZE = 68;
+const COMPOSITE_LAYER_INFO_SIZE = 72; // Updated: 64 (id) + 4 (weight) + 4 (bias)
+const SAMPLER_SIZE = 24; // sizeof(psam_sampler_t): 4 (transform) + 4 (temp) + 4 (top_k) + 4 (top_p) + 8 (seed)
 const is64Bit = process.arch === 'x64' || process.arch === 'arm64';
 const SIZE_OF_LAYER_FILE_STRUCT = is64Bit ? 24 : 12;
 const textDecoder = new TextDecoder();
@@ -188,6 +191,10 @@ function loadLibrary(libraryPath?: string): any {
         args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
         returns: FFIType.i32,
       },
+      psam_predict_with_sampler: {
+        args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.ptr, FFIType.u64],
+        returns: FFIType.i32,
+      },
       psam_explain: {
         args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u32, FFIType.ptr, FFIType.i32, FFIType.ptr],
         returns: FFIType.i32,
@@ -201,6 +208,14 @@ function loadLibrary(libraryPath?: string): any {
       psam_composite_list_layers: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
       psam_composite_predict: {
         args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64],
+        returns: FFIType.i32,
+      },
+      psam_composite_predict_with_sampler: {
+        args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.ptr, FFIType.u64],
+        returns: FFIType.i32,
+      },
+      psam_composite_update_layer_bias: {
+        args: [FFIType.ptr, FFIType.cstring, FFIType.f32],
         returns: FFIType.i32,
       },
       psam_composite_load_file: { args: [FFIType.cstring, FFIType.i32], returns: FFIType.ptr },
@@ -232,6 +247,7 @@ function loadLibrary(libraryPath?: string): any {
       psam_train_batch: ['int32', ['pointer', 'pointer', 'uint64']],
       psam_finalize_training: ['int32', ['pointer']],
       psam_predict: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'uint64']],
+      psam_predict_with_sampler: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'pointer', 'uint64']],
       psam_explain: ['int32', ['pointer', 'pointer', 'uint64', 'uint32', 'pointer', 'int32', 'pointer']],
       psam_create_layered: ['pointer', ['pointer']],
       psam_composite_destroy: ['void', ['pointer']],
@@ -241,6 +257,8 @@ function loadLibrary(libraryPath?: string): any {
       psam_composite_update_layer_weight: ['int32', ['pointer', 'string', 'float']],
       psam_composite_list_layers: ['int32', ['pointer', 'pointer', 'uint64']],
       psam_composite_predict: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'uint64']],
+      psam_composite_predict_with_sampler: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'pointer', 'uint64']],
+      psam_composite_update_layer_bias: ['int32', ['pointer', 'string', 'float']],
       psam_composite_load_file: ['pointer', ['string', 'int']],
       psam_composite_save_file: [
         'int32',
@@ -266,6 +284,34 @@ export function isNativeAvailable(): boolean {
   } catch {
     return false;
   }
+}
+
+/* ============================ Sampler Helpers ============================ */
+
+function serializeSampler(sampler: SamplerConfig | null | undefined): Uint8Array | null {
+  if (!sampler) {
+    return null;
+  }
+
+  const buffer = new Uint8Array(SAMPLER_SIZE);
+  const view = new DataView(buffer.buffer);
+
+  // psam_sampler_t layout:
+  // uint32_t transform (offset 0)
+  // float temperature (offset 4)
+  // int32_t top_k (offset 8)
+  // float top_p (offset 12)
+  // uint64_t seed (offset 16)
+
+  view.setUint32(0, sampler.transform ?? LogitTransform.ZSCORE, true);
+  view.setFloat32(4, sampler.temperature ?? 1.0, true);
+  view.setInt32(8, sampler.topK ?? 0, true);
+  view.setFloat32(12, sampler.topP ?? 0.95, true);
+
+  const seed = sampler.seed ?? Math.floor(Math.random() * 0xFFFFFFFF);
+  view.setBigUint64(16, BigInt(seed), true);
+
+  return buffer;
 }
 
 /* ============================ PSAMNative Class ============================ */
@@ -328,20 +374,34 @@ export class PSAMNative implements TrainablePSAM {
     checkError(result, 'finalizeTraining', this.lib);
   }
 
-  predict(context: TokenId[], maxPredictions?: number): InferenceResult {
+  predict(context: TokenId[], maxPredictions?: number, sampler?: SamplerConfig): InferenceResult {
     const symbols = this.lib.symbols || this.lib;
     const limit = maxPredictions ?? this._topK;
 
     const outBuffer = new Uint8Array(limit * PREDICTION_SIZE);
     const contextArray = new Uint32Array(context);
 
-    const numPreds = symbols.psam_predict(
-      this.handle,
-      contextArray,
-      BigInt(contextArray.length),
-      outBuffer,
-      BigInt(limit)
-    );
+    let numPreds: number;
+
+    if (sampler) {
+      const samplerBuffer = serializeSampler(sampler);
+      numPreds = symbols.psam_predict_with_sampler(
+        this.handle,
+        contextArray,
+        BigInt(contextArray.length),
+        samplerBuffer,
+        outBuffer,
+        BigInt(limit)
+      );
+    } else {
+      numPreds = symbols.psam_predict(
+        this.handle,
+        contextArray,
+        BigInt(contextArray.length),
+        outBuffer,
+        BigInt(limit)
+      );
+    }
 
     if (numPreds < 0) {
       checkError(numPreds, 'predict', this.lib);
@@ -349,15 +409,17 @@ export class PSAMNative implements TrainablePSAM {
 
     const ids: TokenId[] = [];
     const scores = new Float32Array(numPreds);
+    const probabilities = new Float32Array(numPreds);
     const view = new DataView(outBuffer.buffer);
 
     for (let i = 0; i < numPreds; i++) {
       const offset = i * PREDICTION_SIZE;
       ids.push(view.getUint32(offset, true));
       scores[i] = view.getFloat32(offset + 4, true);
+      probabilities[i] = view.getFloat32(offset + 8, true);
     }
 
-    return { ids, scores };
+    return { ids, scores, probabilities };
   }
 
   explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainResult {
@@ -571,6 +633,11 @@ export class LayeredCompositeNative implements LayeredComposite {
     checkError(result, 'composite_update_layer_weight', this.lib);
   }
 
+  updateLayerBias(layerId: string, newBias: number): void {
+    const result = this.symbols.psam_composite_update_layer_bias(this.handle, layerId, newBias);
+    checkError(result, 'composite_update_layer_bias', this.lib);
+  }
+
   listLayers(maxLayers: number = 16): CompositeLayerInfo[] {
     if (maxLayers <= 0) {
       return [];
@@ -595,13 +662,14 @@ export class LayeredCompositeNative implements LayeredComposite {
       const idBytes = buffer.slice(baseOffset, end);
       const id = textDecoder.decode(idBytes);
       const weight = view.getFloat32(baseOffset + PSAM_LAYER_ID_MAX, true);
-      layers.push({ id, weight });
+      const bias = view.getFloat32(baseOffset + PSAM_LAYER_ID_MAX + 4, true);
+      layers.push({ id, weight, bias });
     }
 
     return layers;
   }
 
-  predict(context: TokenId[], maxPredictions: number = this.baseTopK): InferenceResult {
+  predict(context: TokenId[], maxPredictions: number = this.baseTopK, sampler?: SamplerConfig): InferenceResult {
     if (context.length === 0) {
       return { ids: [], scores: new Float32Array() };
     }
@@ -609,13 +677,27 @@ export class LayeredCompositeNative implements LayeredComposite {
     const outBuffer = new Uint8Array(maxPredictions * PREDICTION_SIZE);
     const contextArray = new Uint32Array(context);
 
-    const count = this.symbols.psam_composite_predict(
-      this.handle,
-      contextArray,
-      BigInt(contextArray.length),
-      outBuffer,
-      BigInt(maxPredictions)
-    );
+    let count: number;
+
+    if (sampler) {
+      const samplerBuffer = serializeSampler(sampler);
+      count = this.symbols.psam_composite_predict_with_sampler(
+        this.handle,
+        contextArray,
+        BigInt(contextArray.length),
+        samplerBuffer,
+        outBuffer,
+        BigInt(maxPredictions)
+      );
+    } else {
+      count = this.symbols.psam_composite_predict(
+        this.handle,
+        contextArray,
+        BigInt(contextArray.length),
+        outBuffer,
+        BigInt(maxPredictions)
+      );
+    }
 
     if (count < 0) {
       checkError(count, 'composite_predict', this.lib);
@@ -624,15 +706,17 @@ export class LayeredCompositeNative implements LayeredComposite {
 
     const ids: TokenId[] = [];
     const scores = new Float32Array(count);
+    const probabilities = new Float32Array(count);
     const view = new DataView(outBuffer.buffer, outBuffer.byteOffset, outBuffer.byteLength);
 
     for (let i = 0; i < count; i++) {
       const offset = i * PREDICTION_SIZE;
       ids.push(view.getUint32(offset, true));
       scores[i] = view.getFloat32(offset + 4, true);
+      probabilities[i] = view.getFloat32(offset + 8, true);
     }
 
-    return { ids, scores };
+    return { ids, scores, probabilities };
   }
 
   sample(context: TokenId[], temperature: number = 1.0): TokenId {

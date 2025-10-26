@@ -27,6 +27,7 @@ struct psam_composite {
     size_t layer_count;
     size_t layer_capacity;
     bool owns_base;
+    psam_sampler_t sampler_defaults;  /* Default sampler config from .psamc */
 };
 
 static psam_error_t composite_add_layer_internal(
@@ -81,6 +82,15 @@ psam_composite_t* psam_create_layered(psam_model_t* base_model) {
     composite->layer_capacity = 0;
     composite->layer_count = 0;
     composite->owns_base = false;
+
+    /* Initialize sampler defaults */
+    composite->sampler_defaults = (psam_sampler_t){
+        .transform = PSAM_LOGIT_ZSCORE,
+        .temperature = 1.0f,
+        .top_k = 50,
+        .top_p = 0.95f,
+        .seed = 42
+    };
 
     return composite;
 }
@@ -514,16 +524,9 @@ int psam_composite_predict_with_sampler(
         return PSAM_ERR_NULL_PARAM;
     }
 
-    /* Use default sampler if none provided */
-    psam_sampler_t default_sampler = {
-        .transform = PSAM_LOGIT_ZSCORE,
-        .temperature = 1.0f,
-        .top_k = 0,
-        .top_p = 0.95f,
-        .seed = 42
-    };
+    /* Use composite's default sampler if none provided */
     if (!sampler) {
-        sampler = &default_sampler;
+        sampler = &composite->sampler_defaults;
     }
 
     /* First get raw predictions using existing composite predict */

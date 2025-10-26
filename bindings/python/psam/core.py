@@ -38,8 +38,37 @@ class ModelStats:
     memory_bytes: int
 
 
+class LogitTransform:
+    """Logit transform modes for temperature sampling"""
+    RAW = 0
+    ZSCORE = 1
+    CALIBRATED = 2
+    LEGACY = 3
+
+
+@dataclass
+class SamplerConfig:
+    """Sampler configuration for temperature control"""
+    transform: int = LogitTransform.ZSCORE
+    temperature: float = 1.0
+    top_k: int = 0
+    top_p: float = 0.95
+    seed: int = None
+
+
 # Struct definitions matching C API
 PSAM_LAYER_ID_MAX = 64
+
+class PSAMSampler(ctypes.Structure):
+    _fields_ = [
+        ("transform", ctypes.c_uint32),
+        ("temperature", ctypes.c_float),
+        ("top_k", ctypes.c_int32),
+        ("top_p", ctypes.c_float),
+        ("seed", ctypes.c_uint64),
+    ]
+
+
 class PSAMPrediction(ctypes.Structure):
     _fields_ = [
         ("token_id", ctypes.c_uint32),
@@ -72,6 +101,7 @@ class PSAMCompositeLayerInfo(ctypes.Structure):
     _fields_ = [
         ("id", ctypes.c_char * PSAM_LAYER_ID_MAX),
         ("weight", ctypes.c_float),
+        ("bias", ctypes.c_float),
     ]
 
 
@@ -109,6 +139,7 @@ class CompositeLayerInfo:
     """Metadata for a layer inside a composite"""
     layer_id: str
     weight: float
+    bias: float = 0.0
 
 
 class PSAMStatsStruct(ctypes.Structure):
@@ -216,6 +247,16 @@ def _configure_library(lib):
     ]
     lib.psam_predict.restype = ctypes.c_int32
 
+    lib.psam_predict_with_sampler.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_size_t,
+        ctypes.POINTER(PSAMSampler),
+        ctypes.POINTER(PSAMPrediction),
+        ctypes.c_size_t,
+    ]
+    lib.psam_predict_with_sampler.restype = ctypes.c_int32
+
     lib.psam_explain.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_uint32),
@@ -255,6 +296,13 @@ def _configure_library(lib):
     ]
     lib.psam_composite_update_layer_weight.restype = ctypes.c_int32
 
+    lib.psam_composite_update_layer_bias.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_float,
+    ]
+    lib.psam_composite_update_layer_bias.restype = ctypes.c_int32
+
     lib.psam_composite_list_layers.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(PSAMCompositeLayerInfo),
@@ -270,6 +318,16 @@ def _configure_library(lib):
         ctypes.c_size_t,
     ]
     lib.psam_composite_predict.restype = ctypes.c_int32
+
+    lib.psam_composite_predict_with_sampler.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_size_t,
+        ctypes.POINTER(PSAMSampler),
+        ctypes.POINTER(PSAMPrediction),
+        ctypes.c_size_t,
+    ]
+    lib.psam_composite_predict_with_sampler.restype = ctypes.c_int32
 
     lib.psam_composite_load_file.argtypes = [ctypes.c_char_p, ctypes.c_bool]
     lib.psam_composite_load_file.restype = ctypes.c_void_p
@@ -396,34 +454,48 @@ class PSAM:
         _check_error(result, "finalize_training")
 
     def predict(
-        self, context: List[int], max_predictions: Optional[int] = None
-    ) -> Tuple[List[int], np.ndarray]:
+        self, context: List[int], max_predictions: Optional[int] = None, sampler: Optional[SamplerConfig] = None
+    ) -> Tuple[List[int], np.ndarray, Optional[np.ndarray]]:
         """
         Generate predictions for a given context
 
         Args:
             context: List of token IDs representing the context
             max_predictions: Maximum number of predictions (default: top_k)
+            sampler: Optional sampler configuration for temperature control
 
         Returns:
-            Tuple of (token_ids, scores)
+            Tuple of (token_ids, scores, probabilities)
         """
         limit = max_predictions if max_predictions is not None else self._top_k
 
         context_array = (ctypes.c_uint32 * len(context))(*context)
         predictions = (PSAMPrediction * limit)()
 
-        num_preds = self._lib.psam_predict(
-            self._handle, context_array, len(context), predictions, limit
-        )
+        if sampler is not None:
+            sampler_struct = PSAMSampler()
+            sampler_struct.transform = sampler.transform
+            sampler_struct.temperature = sampler.temperature
+            sampler_struct.top_k = sampler.top_k
+            sampler_struct.top_p = sampler.top_p
+            sampler_struct.seed = sampler.seed if sampler.seed is not None else np.random.randint(0, 0xFFFFFFFF)
+
+            num_preds = self._lib.psam_predict_with_sampler(
+                self._handle, context_array, len(context), ctypes.byref(sampler_struct), predictions, limit
+            )
+        else:
+            num_preds = self._lib.psam_predict(
+                self._handle, context_array, len(context), predictions, limit
+            )
 
         if num_preds < 0:
             _check_error(num_preds, "predict")
 
         token_ids = [predictions[i].token_id for i in range(num_preds)]
         scores = np.array([predictions[i].score for i in range(num_preds)], dtype=np.float32)
+        probabilities = np.array([predictions[i].calibrated_prob for i in range(num_preds)], dtype=np.float32) if sampler else None
 
-        return token_ids, scores
+        return token_ids, scores, probabilities
 
     def explain(
         self, context: List[int], candidate_token: int, max_terms: Optional[int] = None
@@ -650,6 +722,12 @@ class LayeredComposite:
         )
         _check_error(result, "composite_update_layer_weight")
 
+    def update_layer_bias(self, layer_id: str, new_bias: float):
+        result = self._lib.psam_composite_update_layer_bias(
+            self._handle, layer_id.encode("utf-8"), new_bias
+        )
+        _check_error(result, "composite_update_layer_bias")
+
     def list_layers(self, max_layers: int = 16) -> List[CompositeLayerInfo]:
         if max_layers <= 0:
             return []
@@ -667,30 +745,48 @@ class LayeredComposite:
         for i in range(min(count, max_layers)):
             entry = buffer[i]
             layer_id = entry.id.split(b"\x00", 1)[0].decode("utf-8")
-            layers.append(CompositeLayerInfo(layer_id=layer_id, weight=entry.weight))
+            layers.append(CompositeLayerInfo(layer_id=layer_id, weight=entry.weight, bias=entry.bias))
         return layers
 
-    def predict(self, context: List[int], max_predictions: Optional[int] = None) -> Tuple[List[int], np.ndarray]:
+    def predict(self, context: List[int], max_predictions: Optional[int] = None, sampler: Optional[SamplerConfig] = None) -> Tuple[List[int], np.ndarray, Optional[np.ndarray]]:
         if not context:
-            return [], np.zeros(0, dtype=np.float32)
+            return [], np.zeros(0, dtype=np.float32), None
 
         limit = max_predictions if max_predictions is not None else self._default_top_k
         predictions = (PSAMPrediction * limit)()
         context_array = (ctypes.c_uint32 * len(context))(*context)
 
-        count = self._lib.psam_composite_predict(
-            self._handle,
-            context_array,
-            len(context),
-            predictions,
-            limit,
-        )
+        if sampler is not None:
+            sampler_struct = PSAMSampler()
+            sampler_struct.transform = sampler.transform
+            sampler_struct.temperature = sampler.temperature
+            sampler_struct.top_k = sampler.top_k
+            sampler_struct.top_p = sampler.top_p
+            sampler_struct.seed = sampler.seed if sampler.seed is not None else np.random.randint(0, 0xFFFFFFFF)
+
+            count = self._lib.psam_composite_predict_with_sampler(
+                self._handle,
+                context_array,
+                len(context),
+                ctypes.byref(sampler_struct),
+                predictions,
+                limit,
+            )
+        else:
+            count = self._lib.psam_composite_predict(
+                self._handle,
+                context_array,
+                len(context),
+                predictions,
+                limit,
+            )
         if count < 0:
             _check_error(count, "composite_predict")
 
         token_ids = [predictions[i].token_id for i in range(count)]
         scores = np.array([predictions[i].score for i in range(count)], dtype=np.float32)
-        return token_ids, scores
+        probabilities = np.array([predictions[i].calibrated_prob for i in range(count)], dtype=np.float32) if sampler else None
+        return token_ids, scores, probabilities
 
     def sample(self, context: List[int], temperature: float = 1.0) -> int:
         token_ids, scores = self.predict(context, self._default_top_k)

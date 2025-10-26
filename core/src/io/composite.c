@@ -78,9 +78,20 @@ typedef struct {
 typedef struct {
     char layer_id[PSAM_LAYER_ID_MAX];
     float weight;
+    float bias;         /* NEW: Layer bias offset */
     uint32_t ref_index;
-    uint8_t reserved[24];
+    uint8_t reserved[20];
 } psamc_layer_entry_disk_t;
+
+/* Sampler defaults (new in v1.1) */
+typedef struct {
+    uint32_t logit_transform;  /* psam_logit_transform_t */
+    float temperature;
+    int32_t top_k;
+    float top_p;
+    uint64_t seed;
+    uint8_t reserved[12];
+} psamc_sampler_disk_t;
 
 /* ===== Helper utilities ===== */
 
@@ -241,6 +252,27 @@ static int write_config_section(FILE* f, const psamc_hyperparams_t* hyperparams)
     return 0;
 }
 
+static int write_sampler_section(FILE* f, const psamc_sampler_defaults_t* sampler) {
+    if (!f || !sampler) {
+        return -1;
+    }
+
+    psamc_sampler_disk_t disk;
+    memset(&disk, 0, sizeof(disk));
+
+    disk.logit_transform = (uint32_t)sampler->logit_transform;
+    disk.temperature = sampler->temperature;
+    disk.top_k = sampler->top_k;
+    disk.top_p = sampler->top_p;
+    disk.seed = sampler->seed;
+
+    if (fwrite(&disk, sizeof(psamc_sampler_disk_t), 1, f) != 1) {
+        return -1;
+    }
+
+    return 0;
+}
+
 static size_t layer_section_size(const psamc_topology_t* topology) {
     if (!topology) {
         return 0;
@@ -293,6 +325,7 @@ static int write_layer_section(FILE* f, const psamc_topology_t* topology) {
             snprintf(disk.layer_id, PSAM_LAYER_ID_MAX, "%s", entry->layer_id);
         }
         disk.weight = entry->weight;
+        disk.bias = entry->bias;
         disk.ref_index = entry->ref_index;
         if (fwrite(&disk, sizeof(disk), 1, f) != 1) {
             return -1;
@@ -688,6 +721,41 @@ static int read_config_section(FILE* f, const psamc_section_entry_t* section, ps
     return 0;
 }
 
+static void init_sampler_defaults(psamc_sampler_defaults_t* sampler) {
+    if (!sampler) {
+        return;
+    }
+    sampler->logit_transform = PSAM_LOGIT_ZSCORE;
+    sampler->temperature = 1.0f;
+    sampler->top_k = 50;
+    sampler->top_p = 0.95f;
+    sampler->seed = 42;
+}
+
+static int read_sampler_section(FILE* f, const psamc_section_entry_t* section, psamc_sampler_defaults_t* out_sampler) {
+    if (!f || !section || !out_sampler) {
+        return -1;
+    }
+
+    if (psam_fseeko(f, (psam_off_t)section->offset, SEEK_SET) != 0) {
+        return -1;
+    }
+
+    psamc_sampler_disk_t disk;
+    if (fread(&disk, sizeof(psamc_sampler_disk_t), 1, f) != 1) {
+        return -1;
+    }
+
+    memset(out_sampler, 0, sizeof(*out_sampler));
+    out_sampler->logit_transform = (psam_logit_transform_t)disk.logit_transform;
+    out_sampler->temperature = disk.temperature;
+    out_sampler->top_k = disk.top_k;
+    out_sampler->top_p = disk.top_p;
+    out_sampler->seed = disk.seed;
+
+    return 0;
+}
+
 static int read_layer_section(FILE* f, const psamc_section_entry_t* section, psamc_topology_t* out_topology) {
     if (!f || !section || !out_topology) {
         return -1;
@@ -728,6 +796,7 @@ static int read_layer_section(FILE* f, const psamc_section_entry_t* section, psa
         psamc_layer_entry_t* entry = &out_topology->layers[i];
         snprintf(entry->layer_id, PSAM_LAYER_ID_MAX, "%s", disk.layer_id);
         entry->weight = disk.weight;
+        entry->bias = disk.bias;  /* Load bias (will be 0.0 for old files) */
         entry->ref_index = disk.ref_index;
     }
 

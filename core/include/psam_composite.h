@@ -76,6 +76,7 @@ typedef enum {
     PSAMC_SECTION_BASE_MODEL = 3,  /* Base model data */
     PSAMC_SECTION_LAYER = 4,       /* Overlay layer */
     PSAMC_SECTION_METADATA = 5,    /* Human-readable metadata (name, desc, author) */
+    PSAMC_SECTION_SAMPLER = 6,     /* Sampler defaults (v1.1+) */
     PSAMC_SECTION_EXTENSIONS = 99, /* Reserved for future use */
 } psamc_section_type_t;
 
@@ -158,6 +159,22 @@ typedef struct {
     uint8_t reserved[32];       /* Reserved for future parameters */
 } psamc_hyperparams_t;
 
+/* Sampler defaults for composite (used when caller passes NULL sampler) */
+typedef struct {
+    psam_logit_transform_t logit_transform; /* Default: PSAM_LOGIT_ZSCORE */
+    float temperature;                      /* Default: 1.0 */
+    int   top_k;                            /* Default: 50 */
+    float top_p;                            /* Default: 0.95 */
+    uint64_t seed;                          /* Default: 42 */
+} psamc_sampler_defaults_t;
+
+/* Optional calibration parameters (for future use) */
+typedef struct {
+    float global_scale;  /* Default: 1.0 */
+    float global_bias;   /* Default: 0.0 */
+    uint8_t reserved[24];
+} psamc_calibration_t;
+
 /* Optional dataset/source metadata entries */
 typedef struct {
     char label[PSAMC_SOURCE_LABEL_MAX];    /* Short name or description */
@@ -193,8 +210,9 @@ typedef struct {
 typedef struct {
     char layer_id[PSAM_LAYER_ID_MAX];
     float weight;
+    float bias;         /* Layer bias offset (default: 0.0) */
     uint32_t ref_index; /* Index into manifest.refs */
-    uint8_t reserved[24];
+    uint8_t reserved[20];
 } psamc_layer_entry_t;
 
 typedef struct {
@@ -208,6 +226,8 @@ typedef struct {
     psamc_manifest_t manifest;
     psamc_hyperparams_t hyperparams;
     psamc_topology_t topology;
+    psamc_sampler_defaults_t sampler_defaults;
+    psamc_calibration_t calibration;
 } psamc_composite_t;
 
 typedef struct {

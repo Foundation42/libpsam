@@ -50,6 +50,36 @@ export const DEFAULT_TRAIN_OPTIONS: TrainOptions = {
 };
 
 /**
+ * Logit transform modes for temperature sampling
+ */
+export enum LogitTransform {
+  /** Raw scores (no normalization) */
+  RAW = 0,
+  /** Z-score normalization (recommended, default) */
+  ZSCORE = 1,
+  /** Calibrated (reserved for future use) */
+  CALIBRATED = 2,
+  /** Legacy mode (pre-1.1 behavior) */
+  LEGACY = 3,
+}
+
+/**
+ * Sampler configuration for temperature control
+ */
+export interface SamplerConfig {
+  /** Logit transform mode (default: ZSCORE) */
+  transform?: LogitTransform;
+  /** Temperature for sampling (default: 1.0, recommended range: 0.1-2.0 for ZSCORE) */
+  temperature?: number;
+  /** Top-K filtering (default: 0 = use model default) */
+  topK?: number;
+  /** Top-P nucleus sampling (default: 0.95) */
+  topP?: number;
+  /** Random seed for reproducibility (default: random) */
+  seed?: number;
+}
+
+/**
  * Prediction result
  */
 export interface Prediction {
@@ -140,7 +170,7 @@ export interface PSAM {
   /**
    * Predict next tokens given context
    */
-  predict(context: TokenId[], maxPredictions?: number): InferenceResult;
+  predict(context: TokenId[], maxPredictions?: number, sampler?: SamplerConfig): InferenceResult;
 
   /**
    * Explain why a specific token was predicted for the given context.
@@ -150,6 +180,7 @@ export interface PSAM {
 
   /**
    * Sample a single token from the distribution
+   * @deprecated Use predict() with sampler config instead for more control
    */
   sample(context: TokenId[], temperature?: number): TokenId;
 
@@ -197,6 +228,7 @@ export interface TrainablePSAM extends PSAM {
 export interface CompositeLayerInfo {
   id: string;
   weight: number;
+  bias?: number;
 }
 
 export interface LayeredComposite {
@@ -204,8 +236,9 @@ export interface LayeredComposite {
   addLayer(layerId: string, overlay: PSAM, weight: number): void;
   removeLayer(layerId: string): void;
   updateLayerWeight(layerId: string, newWeight: number): void;
+  updateLayerBias?(layerId: string, newBias: number): void;
   listLayers(maxLayers?: number): CompositeLayerInfo[];
-  predict(context: TokenId[], maxPredictions?: number): InferenceResult;
+  predict(context: TokenId[], maxPredictions?: number, sampler?: SamplerConfig): InferenceResult;
   sample(context: TokenId[], temperature?: number): TokenId;
   destroy(): void;
   save?(options: SaveCompositeOptions): void;
