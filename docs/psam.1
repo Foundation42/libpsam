@@ -67,7 +67,14 @@ Number of predictions to consider.
 Nucleus sampling threshold for generate.
 .TP
 .B --temperature FLOAT
-Softmax temperature for sampling.
+Softmax temperature for sampling (default: 1.0, range 0.1-2.0 with zscore).
+.TP
+.B --logit-transform MODE
+Logit preprocessing mode: zscore (default), raw, legacy, or calibrated.
+Z-score normalization makes temperature work intuitively in 0.1-2.0 range.
+.TP
+.B --prompt STRING
+Alias for --context (text used as context, requires --vocab).
 .TP
 .B --seed N
 Deterministic random seed for generate.
@@ -101,8 +108,19 @@ psam build --input data.txt \\
 .PP
 .nf
 psam generate --model model.psam \\
-              --context "the cat" --vocab vocab.tsv \\
-              --count 32 --top_k 16 --top_p 0.95 --temperature 0.9
+              --prompt "the cat" --vocab vocab.tsv \\
+              --count 32 --temperature 0.8 --top_p 0.95
+.fi
+.SS Generate with deterministic sampling
+.PP
+.nf
+psam generate --model model.psam \\
+              --prompt "To be or not to be" \\
+              --vocab vocab.tsv \\
+              --count 20 \\
+              --temperature 0.3 \\
+              --logit-transform zscore \\
+              --seed 42
 .fi
 
 .SH SEE ALSO

@@ -4,7 +4,8 @@
  * Provides browser-compatible PSAM using WebAssembly
  */
 
-import type { TokenId, InferenceResult, ModelStats, TrainablePSAM, PersistenceOptions, ExplainTerm, ExplainResult } from './types.js';
+import type { TokenId, InferenceResult, ModelStats, TrainablePSAM, PersistenceOptions, ExplainTerm, ExplainResult, SamplerConfig } from './types.js';
+import { LogitTransform } from './types.js';
 
 // Type for the Emscripten module
 interface EmscriptenModule {
@@ -21,6 +22,7 @@ interface EmscriptenModule {
 
 const EXPLAIN_TERM_SIZE = 24;
 const EXPLAIN_RESULT_SIZE = 16;
+const SAMPLER_SIZE = 24;
 
 // Singleton WASM module instance
 let wasmModuleInstance: EmscriptenModule | null = null;
@@ -63,6 +65,31 @@ export async function loadPSAMModule(): Promise<EmscriptenModule> {
   });
 
   return wasmModulePromise;
+}
+
+/**
+ * Helper to serialize sampler config to memory buffer
+ */
+function serializeSampler(sampler: SamplerConfig): ArrayBuffer {
+  const buffer = new ArrayBuffer(SAMPLER_SIZE);
+  const view = new DataView(buffer);
+
+  // psam_sampler_t layout (24 bytes):
+  // uint32_t transform (offset 0)
+  // float temperature (offset 4)
+  // int32_t top_k (offset 8)
+  // float top_p (offset 12)
+  // uint64_t seed (offset 16)
+
+  view.setUint32(0, sampler.transform ?? LogitTransform.ZSCORE, true);
+  view.setFloat32(4, sampler.temperature ?? 1.0, true);
+  view.setInt32(8, sampler.topK ?? 0, true);
+  view.setFloat32(12, sampler.topP ?? 0.95, true);
+
+  const seed = sampler.seed ?? Math.floor(Math.random() * 0xFFFFFFFF);
+  view.setBigUint64(16, BigInt(seed), true);
+
+  return buffer;
 }
 
 /**
@@ -135,7 +162,7 @@ export class PSAMWASM implements TrainablePSAM {
     }
   }
 
-  predict(context: TokenId[], maxPredictions?: number): InferenceResult {
+  predict(context: TokenId[], maxPredictions?: number, sampler?: SamplerConfig): InferenceResult {
     const contextArray = new Uint32Array(context);
     const maxPreds = maxPredictions || this._topK;
 
@@ -146,19 +173,36 @@ export class PSAMWASM implements TrainablePSAM {
     // Allocate memory for predictions (12 bytes per prediction: token + score + calibrated_prob)
     const predsPtr = this.module._malloc(maxPreds * 12);
 
-    // Call psam_predict
-    const psam_predict = this.module.cwrap('psam_predict', 'number', ['number', 'number', 'number', 'number', 'number']);
-    const numPreds = psam_predict(this.handle, contextPtr, contextArray.length, predsPtr, maxPreds);
+    let numPreds: number;
+
+    if (sampler) {
+      // Use sampler API
+      const samplerBuffer = serializeSampler(sampler);
+      const samplerPtr = this.module._malloc(SAMPLER_SIZE);
+      this.module.HEAPU8.set(new Uint8Array(samplerBuffer), samplerPtr);
+
+      const psam_predict_with_sampler = this.module.cwrap('psam_predict_with_sampler', 'number',
+        ['number', 'number', 'number', 'number', 'number', 'number']);
+      numPreds = psam_predict_with_sampler(this.handle, contextPtr, contextArray.length, samplerPtr, predsPtr, maxPreds);
+
+      this.module._free(samplerPtr);
+    } else {
+      // Use legacy API
+      const psam_predict = this.module.cwrap('psam_predict', 'number', ['number', 'number', 'number', 'number', 'number']);
+      numPreds = psam_predict(this.handle, contextPtr, contextArray.length, predsPtr, maxPreds);
+    }
 
     // Read predictions
     const ids: number[] = [];
     const scoresArray: number[] = [];
+    const probabilitiesArray: number[] = [];
 
     if (numPreds > 0) {
       for (let i = 0; i < numPreds; i++) {
         const offset = predsPtr / 4 + i * 3; // 3 floats per prediction (token is uint32, score/prob are float)
         ids.push(this.module.HEAPU32[offset]);
         scoresArray.push(this.module.HEAPF32[offset + 1]);
+        probabilitiesArray.push(this.module.HEAPF32[offset + 2]);
       }
     }
 
@@ -166,7 +210,11 @@ export class PSAMWASM implements TrainablePSAM {
     this.module._free(contextPtr);
     this.module._free(predsPtr);
 
-    return { ids, scores: new Float32Array(scoresArray) };
+    return {
+      ids,
+      scores: new Float32Array(scoresArray),
+      probabilities: new Float32Array(probabilitiesArray)
+    };
   }
 
   explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainResult {
@@ -237,21 +285,24 @@ export class PSAMWASM implements TrainablePSAM {
     };
   }
 
-  sample(context: TokenId[], temperature: number = 1.0): TokenId {
-    const result = this.predict(context);
+  sample(context: TokenId[], temperature: number = 1.0, topP: number = 0.95): TokenId {
+    // Use sampler API for consistent behavior
+    const sampler: SamplerConfig = {
+      transform: LogitTransform.ZSCORE,
+      temperature,
+      topK: this._topK,
+      topP,
+      seed: Math.floor(Math.random() * 0xFFFFFFFF)
+    };
+
+    const result = this.predict(context, undefined, sampler);
 
     if (result.ids.length === 0) {
       throw new Error('No predictions available');
     }
 
-    // Apply temperature and softmax
-    const logits = result.scores.map(s => s / temperature);
-    const maxLogit = Math.max(...logits);
-    const expScores = logits.map(l => Math.exp(l - maxLogit));
-    const sumExp = expScores.reduce((a, b) => a + b, 0);
-    const probs = expScores.map(e => e / sumExp);
-
-    // Sample from distribution
+    // Sample from calibrated probabilities
+    const probs = result.probabilities || result.scores;
     const rand = Math.random();
     let cumsum = 0;
     for (let i = 0; i < probs.length; i++) {
