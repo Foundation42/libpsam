@@ -252,27 +252,6 @@ static int write_config_section(FILE* f, const psamc_hyperparams_t* hyperparams)
     return 0;
 }
 
-static int write_sampler_section(FILE* f, const psamc_sampler_defaults_t* sampler) {
-    if (!f || !sampler) {
-        return -1;
-    }
-
-    psamc_sampler_disk_t disk;
-    memset(&disk, 0, sizeof(disk));
-
-    disk.logit_transform = (uint32_t)sampler->logit_transform;
-    disk.temperature = sampler->temperature;
-    disk.top_k = sampler->top_k;
-    disk.top_p = sampler->top_p;
-    disk.seed = sampler->seed;
-
-    if (fwrite(&disk, sizeof(psamc_sampler_disk_t), 1, f) != 1) {
-        return -1;
-    }
-
-    return 0;
-}
-
 static size_t layer_section_size(const psamc_topology_t* topology) {
     if (!topology) {
         return 0;
@@ -302,6 +281,57 @@ static void free_topology(psamc_topology_t* topology) {
     topology->layer_count = 0;
     topology->base_weight = 1.0f;
     topology->base_ref_index = 0;
+}
+
+static void init_sampler_defaults(psamc_sampler_defaults_t* sampler) {
+    if (!sampler) {
+        return;
+    }
+    sampler->logit_transform = PSAM_LOGIT_ZSCORE;
+    sampler->temperature = 1.0f;
+    sampler->top_k = 50;
+    sampler->top_p = 0.95f;
+    sampler->seed = 42;
+}
+
+static int write_sampler_section(FILE* f, const psamc_sampler_defaults_t* sampler) {
+    if (!f || !sampler) {
+        return -1;
+    }
+
+    psamc_sampler_disk_t disk;
+    memset(&disk, 0, sizeof(disk));
+    disk.logit_transform = (uint32_t)sampler->logit_transform;
+    disk.temperature = sampler->temperature;
+    disk.top_k = sampler->top_k;
+    disk.top_p = sampler->top_p;
+    disk.seed = sampler->seed;
+
+    return fwrite(&disk, sizeof(psamc_sampler_disk_t), 1, f) == 1 ? 0 : -1;
+}
+
+static int read_sampler_section(FILE* f, const psamc_section_entry_t* section, psamc_sampler_defaults_t* out_sampler) {
+    if (!f || !section || !out_sampler) {
+        return -1;
+    }
+
+    if (psam_fseeko(f, (psam_off_t)section->offset, SEEK_SET) != 0) {
+        return -1;
+    }
+
+    psamc_sampler_disk_t disk;
+    if (fread(&disk, sizeof(psamc_sampler_disk_t), 1, f) != 1) {
+        return -1;
+    }
+
+    memset(out_sampler, 0, sizeof(*out_sampler));
+    out_sampler->logit_transform = (psam_logit_transform_t)disk.logit_transform;
+    out_sampler->temperature = disk.temperature;
+    out_sampler->top_k = disk.top_k;
+    out_sampler->top_p = disk.top_p;
+    out_sampler->seed = disk.seed;
+
+    return 0;
 }
 
 static int write_layer_section(FILE* f, const psamc_topology_t* topology) {
@@ -460,7 +490,7 @@ int psamc_save(
         return -1;
     }
 
-    uint32_t num_sections = 1; /* config */
+    uint32_t num_sections = 2; /* config + sampler */
     if (manifest) {
         num_sections++;
     }
@@ -504,6 +534,14 @@ int psamc_save(
     sections[section_index].offset = offset;
     sections[section_index].size = sizeof(psamc_hyperparams_disk_t);
     offset += sections[section_index].size;
+    section_index++;
+
+    /* Sampler section */
+    sections[section_index].type = PSAMC_SECTION_SAMPLER;
+    sections[section_index].flags = 0;
+    sections[section_index].offset = offset;
+    sections[section_index].size = sizeof(psamc_sampler_disk_t);
+    offset += sections[section_index].size;
 
     psamc_header_t header = {0};
     header.magic = PSAMC_MAGIC;
@@ -542,6 +580,15 @@ int psamc_save(
     }
 
     if (write_config_section(f, hyperparams) != 0) {
+        fclose(f);
+        free(sections);
+        return -1;
+    }
+
+    /* Write sampler defaults */
+    psamc_sampler_defaults_t sampler_defaults;
+    init_sampler_defaults(&sampler_defaults);
+    if (write_sampler_section(f, &sampler_defaults) != 0) {
         fclose(f);
         free(sections);
         return -1;
@@ -721,41 +768,6 @@ static int read_config_section(FILE* f, const psamc_section_entry_t* section, ps
     return 0;
 }
 
-static void init_sampler_defaults(psamc_sampler_defaults_t* sampler) {
-    if (!sampler) {
-        return;
-    }
-    sampler->logit_transform = PSAM_LOGIT_ZSCORE;
-    sampler->temperature = 1.0f;
-    sampler->top_k = 50;
-    sampler->top_p = 0.95f;
-    sampler->seed = 42;
-}
-
-static int read_sampler_section(FILE* f, const psamc_section_entry_t* section, psamc_sampler_defaults_t* out_sampler) {
-    if (!f || !section || !out_sampler) {
-        return -1;
-    }
-
-    if (psam_fseeko(f, (psam_off_t)section->offset, SEEK_SET) != 0) {
-        return -1;
-    }
-
-    psamc_sampler_disk_t disk;
-    if (fread(&disk, sizeof(psamc_sampler_disk_t), 1, f) != 1) {
-        return -1;
-    }
-
-    memset(out_sampler, 0, sizeof(*out_sampler));
-    out_sampler->logit_transform = (psam_logit_transform_t)disk.logit_transform;
-    out_sampler->temperature = disk.temperature;
-    out_sampler->top_k = disk.top_k;
-    out_sampler->top_p = disk.top_p;
-    out_sampler->seed = disk.seed;
-
-    return 0;
-}
-
 static int read_layer_section(FILE* f, const psamc_section_entry_t* section, psamc_topology_t* out_topology) {
     if (!f || !section || !out_topology) {
         return -1;
@@ -883,9 +895,12 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
     psamc_hyperparams_t config = {0};
     psamc_topology_t topology;
     init_topology_defaults(&topology);
+    psamc_sampler_defaults_t sampler_defaults;
+    init_sampler_defaults(&sampler_defaults);
 
     bool manifest_loaded = false;
     bool config_loaded = false;
+    bool sampler_loaded = false;
     uint64_t manifest_hash_offset = 0;
 
     for (uint32_t i = 0; i < header.num_sections; i++) {
@@ -914,6 +929,14 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
                     fclose(f);
                     free_manifest(&manifest);
                     return NULL;
+                }
+                break;
+            case PSAMC_SECTION_SAMPLER:
+                if (read_sampler_section(f, section, &sampler_defaults) != 0) {
+                    /* Non-fatal: use defaults if sampler section is malformed */
+                    init_sampler_defaults(&sampler_defaults);
+                } else {
+                    sampler_loaded = true;
                 }
                 break;
             default:
@@ -973,6 +996,7 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
     composite->hyperparams = config;
     composite->manifest = manifest;
     composite->topology = topology;
+    composite->sampler_defaults = sampler_defaults;
 
     return composite;
 }
