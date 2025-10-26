@@ -188,6 +188,182 @@ cleanup:
     return result;
 }
 
+/* ============================ Sampler Utilities ============================ */
+
+/**
+ * Compute mean and standard deviation of scores
+ */
+static void compute_stats(const float* scores, size_t n, float* out_mean, float* out_std) {
+    if (n == 0) {
+        *out_mean = 0.0f;
+        *out_std = 1.0f;
+        return;
+    }
+
+    double sum = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        sum += scores[i];
+    }
+    float mean = (float)(sum / (double)n);
+
+    double var_sum = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double diff = scores[i] - mean;
+        var_sum += diff * diff;
+    }
+    float std = sqrtf((float)(var_sum / (double)n));
+
+    *out_mean = mean;
+    *out_std = std > 1e-6f ? std : 1e-6f;  /* Avoid division by zero */
+}
+
+/**
+ * Apply logit transform based on mode
+ * (Internal helper, exposed for composite layer usage)
+ */
+void apply_logit_transform(
+    float* logits,
+    const float* scores,
+    size_t n,
+    psam_logit_transform_t transform
+) {
+    if (transform == PSAM_LOGIT_RAW || transform == PSAM_LOGIT_LEGACY) {
+        /* Just copy scores as-is (max subtraction happens in softmax) */
+        memcpy(logits, scores, n * sizeof(float));
+    } else if (transform == PSAM_LOGIT_ZSCORE) {
+        /* Z-score normalization */
+        float mean, std;
+        compute_stats(scores, n, &mean, &std);
+        for (size_t i = 0; i < n; ++i) {
+            logits[i] = (scores[i] - mean) / std;
+        }
+    } else if (transform == PSAM_LOGIT_CALIBRATED) {
+        /* TODO: Implement calibration with composite calibration data */
+        /* For now, fall back to z-score */
+        float mean, std;
+        compute_stats(scores, n, &mean, &std);
+        for (size_t i = 0; i < n; ++i) {
+            logits[i] = (scores[i] - mean) / std;
+        }
+    }
+}
+
+/**
+ * Apply temperature and compute softmax with numerical stability
+ * (Internal helper, exposed for composite layer usage)
+ */
+void apply_temperature_and_softmax(
+    float* probs,
+    float* logits,
+    size_t n,
+    float temperature
+) {
+    /* Apply temperature scaling */
+    if (temperature != 1.0f) {
+        float inv_temp = 1.0f / temperature;
+        for (size_t i = 0; i < n; ++i) {
+            logits[i] *= inv_temp;
+        }
+    }
+
+    /* Find max for numerical stability */
+    float max_logit = logits[0];
+    for (size_t i = 1; i < n; ++i) {
+        if (logits[i] > max_logit) {
+            max_logit = logits[i];
+        }
+    }
+
+    /* Compute softmax */
+    double sum = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double val = exp((double)(logits[i] - max_logit));
+        probs[i] = (float)val;
+        sum += val;
+    }
+
+    /* Normalize */
+    if (sum > 0.0) {
+        for (size_t i = 0; i < n; ++i) {
+            probs[i] /= (float)sum;
+        }
+    }
+}
+
+/**
+ * Get default sampler configuration
+ */
+static psam_sampler_t get_default_sampler(void) {
+    psam_sampler_t sampler = {
+        .transform = PSAM_LOGIT_ZSCORE,
+        .temperature = 1.0f,
+        .top_k = 0,
+        .top_p = 0.95f,
+        .seed = 42
+    };
+    return sampler;
+}
+
+int psam_predict_with_sampler(
+    psam_model_t* model,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+) {
+    if (!model || !context || !out_preds) {
+        return PSAM_ERR_NULL_PARAM;
+    }
+
+    /* Use default sampler if none provided */
+    psam_sampler_t default_sampler;
+    if (!sampler) {
+        default_sampler = get_default_sampler();
+        sampler = &default_sampler;
+    }
+
+    /* First, get raw predictions */
+    int count = psam_predict(model, context, context_len, out_preds, max_preds);
+    if (count <= 0) {
+        return count;
+    }
+
+    size_t n = (size_t)count;
+
+    /* Extract scores into a temporary array */
+    float* scores = malloc(n * sizeof(float));
+    float* logits = malloc(n * sizeof(float));
+    float* probs = malloc(n * sizeof(float));
+    if (!scores || !logits || !probs) {
+        free(scores);
+        free(logits);
+        free(probs);
+        return PSAM_ERR_OUT_OF_MEMORY;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        scores[i] = out_preds[i].score;
+    }
+
+    /* Apply logit transform */
+    apply_logit_transform(logits, scores, n, sampler->transform);
+
+    /* Apply temperature and softmax */
+    apply_temperature_and_softmax(probs, logits, n, sampler->temperature);
+
+    /* Populate calibrated_prob field */
+    for (size_t i = 0; i < n; ++i) {
+        out_preds[i].calibrated_prob = probs[i];
+    }
+
+    free(scores);
+    free(logits);
+    free(probs);
+
+    return count;
+}
+
 psam_error_t psam_predict_batch(
     psam_model_t* model,
     const uint32_t** contexts,

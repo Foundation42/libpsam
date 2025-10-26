@@ -136,6 +136,26 @@ static double rng_uniform(uint64_t* state) {
     return ((*state >> 11) & 0x1FFFFFFFFFFFFFULL) * (1.0 / 9007199254740992.0);
 }
 
+/* ==== sampler helpers ==== */
+
+static psam_logit_transform_t parse_logit_transform(const char* str) {
+    if (strcmp(str, "raw") == 0) return PSAM_LOGIT_RAW;
+    if (strcmp(str, "zscore") == 0) return PSAM_LOGIT_ZSCORE;
+    if (strcmp(str, "calibrated") == 0) return PSAM_LOGIT_CALIBRATED;
+    if (strcmp(str, "legacy") == 0) return PSAM_LOGIT_LEGACY;
+    return PSAM_LOGIT_ZSCORE; /* default */
+}
+
+static const char* logit_transform_to_string(psam_logit_transform_t t) {
+    switch (t) {
+        case PSAM_LOGIT_RAW: return "raw";
+        case PSAM_LOGIT_ZSCORE: return "zscore";
+        case PSAM_LOGIT_CALIBRATED: return "calibrated";
+        case PSAM_LOGIT_LEGACY: return "legacy";
+        default: return "zscore";
+    }
+}
+
 static int sample_prediction(const psam_prediction_t* preds,
                              int num_preds,
                              uint32_t top_k,
@@ -760,11 +780,14 @@ typedef struct {
     uint32_t top_k;
     float temperature;
     float top_p;
+    psam_logit_transform_t logit_transform;
     bool pretty;
 } predict_options_t;
 
 static void predict_usage(void) {
-    printf("Usage: psam predict --model model.psam (--ctx-ids 1,2,3 | --context \"text\" --vocab vocab.tsv) [--top_k 5] [--temperature 1.0] [--top_p 1.0] [--pretty]\n");
+    printf("Usage: psam predict --model model.psam (--ctx-ids 1,2,3 | --context \"text\" --vocab vocab.tsv) \n");
+    printf("       [--top_k 5] [--temperature 1.0] [--top_p 0.95] [--logit-transform zscore|raw|legacy|calibrated] [--pretty]\n");
+    printf("\nAliases: --prompt can be used instead of --context\n");
 }
 
 typedef struct {
@@ -776,6 +799,7 @@ typedef struct {
     uint32_t top_k;
     float top_p;
     float temperature;
+    psam_logit_transform_t logit_transform;
     uint32_t seed;
     bool seed_provided;
     bool pretty;
@@ -783,7 +807,10 @@ typedef struct {
 } generate_options_t;
 
 static void generate_usage(void) {
-    printf("Usage: psam generate --model model.psam (--ctx-ids 1,2,3 | --context \"text\" --vocab vocab.tsv) [--count 32] [--top_k 16] [--top_p 1.0] [--temperature 1.0] [--seed N] [--pretty] [--quiet]\n");
+    printf("Usage: psam generate --model model.psam (--ctx-ids 1,2,3 | --context \"text\" --vocab vocab.tsv) \n");
+    printf("       [--count 32] [--top_k 16] [--top_p 0.95] [--temperature 1.0] [--logit-transform zscore|raw|legacy|calibrated] \n");
+    printf("       [--seed N] [--pretty] [--quiet]\n");
+    printf("\nAliases: --prompt can be used instead of --context\n");
 }
 
 static int generate_command(int argc, char** argv) {
@@ -791,8 +818,9 @@ static int generate_command(int argc, char** argv) {
     memset(&opts, 0, sizeof(opts));
     opts.count = 32;
     opts.top_k = 16;
-    opts.top_p = 1.0f;
+    opts.top_p = 0.95f;
     opts.temperature = 1.0f;
+    opts.logit_transform = PSAM_LOGIT_ZSCORE;
 
     for (int i = 2; i < argc; ++i) {
         const char* arg = argv[i];
@@ -802,7 +830,7 @@ static int generate_command(int argc, char** argv) {
         } else if (strcmp(arg, "--ctx-ids") == 0) {
             if (++i >= argc) { generate_usage(); return EXIT_BAD_ARGS; }
             opts.ctx_ids = argv[i];
-        } else if (strcmp(arg, "--context") == 0) {
+        } else if (strcmp(arg, "--context") == 0 || strcmp(arg, "--prompt") == 0) {
             if (++i >= argc) { generate_usage(); return EXIT_BAD_ARGS; }
             opts.context_text = argv[i];
         } else if (strcmp(arg, "--vocab") == 0) {
@@ -828,6 +856,12 @@ static int generate_command(int argc, char** argv) {
                 generate_usage();
                 return EXIT_BAD_ARGS;
             }
+        } else if (strcmp(arg, "--logit-transform") == 0) {
+            if (++i >= argc) {
+                generate_usage();
+                return EXIT_BAD_ARGS;
+            }
+            opts.logit_transform = parse_logit_transform(argv[i]);
         } else if (strcmp(arg, "--seed") == 0) {
             if (++i >= argc || parse_uint32(argv[i], &opts.seed) != 0) {
                 generate_usage();
@@ -913,12 +947,24 @@ static int generate_command(int argc, char** argv) {
     if (rng_state == 0) rng_state = 1;
     bool first_output = true;
 
+    /* Configure sampler */
+    psam_sampler_t sampler = {
+        .transform = opts.logit_transform,
+        .temperature = opts.temperature,
+        .top_k = (int)opts.top_k,
+        .top_p = opts.top_p,
+        .seed = rng_state
+    };
+
     for (uint32_t step = 0; step < opts.count; ++step) {
-        int num_preds = psam_predict(model, context.data, context.size, preds, predict_cap);
+        /* Use new sampler API */
+        sampler.seed = rng_state;  /* Update seed for each step */
+        int num_preds = psam_predict_with_sampler(model, context.data, context.size, &sampler, preds, predict_cap);
         if (num_preds <= 0) {
             break;
         }
 
+        /* Sample from the computed probabilities */
         uint32_t next_token = 0;
         if (sample_prediction(preds, num_preds, opts.top_k, opts.temperature, opts.top_p, &rng_state, &next_token) != 0) {
             break;
@@ -1010,7 +1056,8 @@ static int predict_command(int argc, char** argv) {
     memset(&opts, 0, sizeof(opts));
     opts.top_k = 5;
     opts.temperature = 1.0f;
-    opts.top_p = 1.0f;
+    opts.top_p = 0.95f;
+    opts.logit_transform = PSAM_LOGIT_ZSCORE;
 
     for (int i = 2; i < argc; ++i) {
         const char* arg = argv[i];
@@ -1020,7 +1067,7 @@ static int predict_command(int argc, char** argv) {
         } else if (strcmp(arg, "--ctx-ids") == 0) {
             if (++i >= argc) { predict_usage(); return EXIT_BAD_ARGS; }
             opts.ctx_ids = argv[i];
-        } else if (strcmp(arg, "--context") == 0) {
+        } else if (strcmp(arg, "--context") == 0 || strcmp(arg, "--prompt") == 0) {
             if (++i >= argc) { predict_usage(); return EXIT_BAD_ARGS; }
             opts.context_text = argv[i];
         } else if (strcmp(arg, "--vocab") == 0) {
@@ -1041,6 +1088,12 @@ static int predict_command(int argc, char** argv) {
                 predict_usage();
                 return EXIT_BAD_ARGS;
             }
+        } else if (strcmp(arg, "--logit-transform") == 0) {
+            if (++i >= argc) {
+                predict_usage();
+                return EXIT_BAD_ARGS;
+            }
+            opts.logit_transform = parse_logit_transform(argv[i]);
         } else if (strcmp(arg, "--pretty") == 0) {
             opts.pretty = true;
         } else if (strcmp(arg, "--json") == 0) {
@@ -1120,9 +1173,18 @@ static int predict_command(int argc, char** argv) {
         return EXIT_INTERNAL;
     }
 
-    int num_preds = psam_predict(model, context.data, context.size, preds, predict_count);
+    /* Configure sampler */
+    psam_sampler_t sampler = {
+        .transform = opts.logit_transform,
+        .temperature = opts.temperature,
+        .top_k = (int)opts.top_k,
+        .top_p = opts.top_p,
+        .seed = 42
+    };
+
+    int num_preds = psam_predict_with_sampler(model, context.data, context.size, &sampler, preds, predict_count);
     if (num_preds < 0) {
-        print_error("psam_predict failed (%d)", num_preds);
+        print_error("psam_predict_with_sampler failed (%d)", num_preds);
         free(preds);
         psam_destroy(model);
         vocab_free(&vocab);
@@ -1137,23 +1199,27 @@ static int predict_command(int argc, char** argv) {
     }
     for (int i = 0; i < num_preds; ++i) {
         const char* token_str = vocab.size ? vocab_lookup_token(&vocab, preds[i].token) : NULL;
-        float score = preds[i].score;
-        if (opts.temperature != 1.0f) {
-            score = preds[i].score / opts.temperature;
-        }
         if (opts.pretty) {
             printf("    {\"id\":%u", preds[i].token);
             if (token_str) {
                 printf(", \"token\":\"%s\"", token_str);
             }
-            printf(", \"score\":%.6f}", score);
+            printf(", \"score\":%.6f", preds[i].score);
+            if (preds[i].calibrated_prob > 0.0f) {
+                printf(", \"prob\":%.6f", preds[i].calibrated_prob);
+            }
+            printf("}");
             if (i + 1 < num_preds) printf(",\n"); else printf("\n");
         } else {
             printf("{\"id\":%u", preds[i].token);
             if (token_str) {
                 printf(",\"token\":\"%s\"", token_str);
             }
-            printf(",\"score\":%.6f}", score);
+            printf(",\"score\":%.6f", preds[i].score);
+            if (preds[i].calibrated_prob > 0.0f) {
+                printf(",\"prob\":%.6f", preds[i].calibrated_prob);
+            }
+            printf("}");
             if (i + 1 < num_preds) printf(",");
         }
     }

@@ -73,11 +73,35 @@ typedef enum {
 } psam_composite_topology_t;
 
 /**
+ * Logit transform modes for sampling.
+ * Controls how raw scores are normalized before temperature scaling.
+ */
+typedef enum {
+    PSAM_LOGIT_RAW = 0,        /* Raw scores (shifted by max only for numerical stability) */
+    PSAM_LOGIT_ZSCORE = 1,     /* Per-step z-score standardization (default, temp 0.1-2.0 works intuitively) */
+    PSAM_LOGIT_CALIBRATED = 2, /* Use composite calibration if present */
+    PSAM_LOGIT_LEGACY = 3      /* Preserves current "very hot" temps (10-100 range) */
+} psam_logit_transform_t;
+
+/**
+ * Sampler configuration for inference.
+ * Controls temperature, top-k/top-p filtering, and logit preprocessing.
+ */
+typedef struct {
+    psam_logit_transform_t transform; /* Logit preprocessing mode (default: PSAM_LOGIT_ZSCORE) */
+    float temperature;                /* Sampling temperature (default: 1.0) */
+    int   top_k;                      /* Top-k filtering, 0 = use model default (default: 0) */
+    float top_p;                      /* Nucleus sampling threshold (default: 0.95) */
+    uint64_t seed;                    /* Random seed for reproducibility (default: 42) */
+} psam_sampler_t;
+
+/**
  * Lightweight descriptor for inspecting layers attached to a composite.
  */
 typedef struct {
     char id[PSAM_LAYER_ID_MAX];
-    float weight;
+    float weight;                     /* Layer gain/scaling factor */
+    float bias;                       /* Layer bias offset (default: 0.0) */
 } psam_composite_layer_info_t;
 
 typedef struct {
@@ -116,6 +140,8 @@ typedef struct {
     float    total_score;     /* Final score used by the sampler (bias + contributions) */
     float    bias_score;      /* Baseline bias score for the candidate */
     int32_t  term_count;      /* Total number of contributing terms discovered */
+    float    z_logit;         /* Z-score normalized logit (0.0 if not available) */
+    float    prob;            /* Post-softmax probability (0.0 if not available) */
 } psam_explain_result_t;
 
 /**
@@ -300,6 +326,38 @@ PSAM_API int psam_predict(
 );
 
 /**
+ * Inference with explicit sampler configuration.
+ * Returns top predictions with configurable logit normalization and sampling.
+ * Populates calibrated_prob field in predictions with post-softmax probabilities.
+ *
+ * @param model Trained model (must be finalized)
+ * @param context Array of context token IDs
+ * @param context_len Number of tokens in context
+ * @param sampler Sampler config (NULL uses defaults: z-score, temp=1.0, top_p=0.95)
+ * @param out_preds Output buffer for predictions
+ * @param max_preds Maximum predictions to return
+ * @return Number of predictions on success (>= 0), negative error code otherwise
+ *
+ * Example:
+ *   psam_sampler_t sampler = {
+ *       .transform = PSAM_LOGIT_ZSCORE,
+ *       .temperature = 0.7f,
+ *       .top_k = 0,  // use model default
+ *       .top_p = 0.9f,
+ *       .seed = 42
+ *   };
+ *   int n = psam_predict_with_sampler(model, context, 3, &sampler, preds, 32);
+ */
+PSAM_API int psam_predict_with_sampler(
+    psam_model_t* model,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+);
+
+/**
  * Batch inference: process multiple contexts in one call.
  * Internally parallelized for high throughput.
  *
@@ -449,6 +507,42 @@ PSAM_API int psam_composite_predict(
     size_t context_len,
     psam_prediction_t* out_preds,
     size_t max_preds
+);
+
+/**
+ * Composite inference with explicit sampler configuration.
+ * Blends predictions from multiple layers with per-layer weight/bias,
+ * then applies logit normalization and temperature sampling.
+ *
+ * @param composite Composite model
+ * @param context Array of context token IDs
+ * @param context_len Number of tokens in context
+ * @param sampler Sampler config (NULL uses defaults)
+ * @param out_preds Output buffer for predictions
+ * @param max_preds Maximum predictions to return
+ * @return Number of predictions on success (>= 0), negative error code otherwise
+ */
+PSAM_API int psam_composite_predict_with_sampler(
+    psam_composite_t* composite,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+);
+
+/**
+ * Update the bias for a specific layer in the composite.
+ *
+ * @param composite Composite model
+ * @param layer_id Layer identifier
+ * @param new_bias New bias value (added after weight scaling)
+ * @return PSAM_OK on success, PSAM_ERR_LAYER_NOT_FOUND if layer not found
+ */
+PSAM_API psam_error_t psam_composite_update_layer_bias(
+    psam_composite_t* composite,
+    const char* layer_id,
+    float new_bias
 );
 
 /* ============================ Persistence ============================ */

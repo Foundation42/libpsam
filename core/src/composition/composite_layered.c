@@ -15,6 +15,7 @@ typedef struct {
     char id[PSAM_LAYER_ID_MAX];
     psam_model_t* model;
     float weight;
+    float bias;
     bool owns_model;
 } layered_entry_t;
 
@@ -224,6 +225,7 @@ int psam_composite_list_layers(
             composite->layers[i].id
         );
         out_layers[i].weight = composite->layers[i].weight;
+        out_layers[i].bias = composite->layers[i].bias;
     }
 
     return (int)count;
@@ -373,12 +375,13 @@ static void accumulate_scores(
     size_t capacity,
     const psam_prediction_t* preds,
     size_t pred_count,
-    float weight
+    float weight,
+    float bias
 ) {
     for (size_t i = 0; i < pred_count; ++i) {
         uint32_t token = preds[i].token;
-        float contribution = preds[i].score * weight;
-        if (contribution == 0.0f) {
+        float contribution = preds[i].score * weight + bias;
+        if (contribution == 0.0f && bias == 0.0f) {
             continue;
         }
         bool found = false;
@@ -443,7 +446,7 @@ int psam_composite_predict(
         goto cleanup;
     }
 
-    accumulate_scores(accum, &accum_size, capacity, scratch, (size_t)count, composite->base_weight);
+    accumulate_scores(accum, &accum_size, capacity, scratch, (size_t)count, composite->base_weight, 0.0f);
 
     for (size_t i = 0; i < composite->layer_count; ++i) {
         layered_entry_t* entry = &composite->layers[i];
@@ -452,7 +455,7 @@ int psam_composite_predict(
             result = count;
             goto cleanup;
         }
-        accumulate_scores(accum, &accum_size, capacity, scratch, (size_t)count, entry->weight);
+        accumulate_scores(accum, &accum_size, capacity, scratch, (size_t)count, entry->weight, entry->bias);
     }
 
     if (accum_size == 0) {
@@ -475,4 +478,91 @@ cleanup:
     free(scratch);
     free(accum);
     return result;
+}
+
+psam_error_t psam_composite_update_layer_bias(
+    psam_composite_t* composite,
+    const char* layer_id,
+    float new_bias
+) {
+    if (!composite || !layer_id) {
+        return PSAM_ERR_NULL_PARAM;
+    }
+
+    layered_entry_t* layer = find_layer(composite->layers, composite->layer_count, layer_id);
+    if (!layer) {
+        return PSAM_ERR_LAYER_NOT_FOUND;
+    }
+
+    layer->bias = new_bias;
+    return PSAM_OK;
+}
+
+/* Forward declarations from infer.c - these are internal sampler helpers */
+extern void apply_logit_transform(float* logits, const float* scores, size_t n, psam_logit_transform_t transform);
+extern void apply_temperature_and_softmax(float* probs, float* logits, size_t n, float temperature);
+
+int psam_composite_predict_with_sampler(
+    psam_composite_t* composite,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+) {
+    if (!composite || !context || !out_preds) {
+        return PSAM_ERR_NULL_PARAM;
+    }
+
+    /* Use default sampler if none provided */
+    psam_sampler_t default_sampler = {
+        .transform = PSAM_LOGIT_ZSCORE,
+        .temperature = 1.0f,
+        .top_k = 0,
+        .top_p = 0.95f,
+        .seed = 42
+    };
+    if (!sampler) {
+        sampler = &default_sampler;
+    }
+
+    /* First get raw predictions using existing composite predict */
+    int count = psam_composite_predict(composite, context, context_len, out_preds, max_preds);
+    if (count <= 0) {
+        return count;
+    }
+
+    size_t n = (size_t)count;
+
+    /* Extract scores and apply sampler transforms */
+    float* scores = malloc(n * sizeof(float));
+    float* logits = malloc(n * sizeof(float));
+    float* probs = malloc(n * sizeof(float));
+    if (!scores || !logits || !probs) {
+        free(scores);
+        free(logits);
+        free(probs);
+        return PSAM_ERR_OUT_OF_MEMORY;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        scores[i] = out_preds[i].score;
+    }
+
+    /* Apply logit transform */
+    apply_logit_transform(logits, scores, n, sampler->transform);
+
+    /* Apply temperature and softmax */
+    apply_temperature_and_softmax(probs, logits, n, sampler->temperature);
+
+    /* Populate calibrated_prob field */
+    for (size_t i = 0; i < n; ++i) {
+        out_preds[i].calibrated_prob = probs[i];
+    }
+
+    free(scores);
+    free(logits);
+    free(probs);
+
+    return count;
 }
