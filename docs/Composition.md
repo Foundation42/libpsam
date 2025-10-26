@@ -171,6 +171,7 @@ const musicProducer = PSAM.sequenced()
 - Composite model save/load format
 - Unified prediction interface
 - Regression target: pull a few Shakespeare plays from `corpora/text/` to sanity-check that layered blends actually shift lexical focus (e.g., tragedies vs comedies).
+- A reproducible harness now lives in `scripts/shakespeare_harness.py`; it trains tragedy/comedy overlays that share the `tiny_shakespeare` vocabulary, emits `.psamc` artifacts, and prints sample predictions for a prompt so we can spot regression drift quickly.
 - CLI `psam compose` already emits balanced `.psamc` manifests (first `--layer` is base, subsequent entries are overlays with weight 1.0 by default); bindings can call `psam_composite_save_file` and `psam_composite_load_file` directly.
 
 ### **Phase 2: Advanced Topologies** 
