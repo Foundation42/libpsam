@@ -306,22 +306,32 @@ static psam_model_t* load_model_from_ref(const char* composite_path, const psamc
     }
     char* resolved = resolve_reference_path(composite_path, ref->url);
     const char* path_to_load = resolved ? resolved : ref->url;
+    fprintf(stderr, "DEBUG: load_model_from_ref - composite_path='%s', ref->url='%s', resolved='%s'\n",
+            composite_path, ref->url, resolved ? resolved : "NULL");
     psam_model_t* model = psam_load(path_to_load);
+    if (!model) {
+        fprintf(stderr, "DEBUG: load_model_from_ref - psam_load('%s') failed\n", path_to_load);
+    }
     free(resolved);
     return model;
 }
 
 psam_composite_t* psam_composite_load_file(const char* path, bool verify_integrity) {
     if (!path) {
+        fprintf(stderr, "DEBUG: psam_composite_load_file - path is NULL\n");
         return NULL;
     }
 
+    fprintf(stderr, "DEBUG: psam_composite_load_file - loading '%s' with verify=%d\n", path, verify_integrity);
     psamc_composite_t* spec = psamc_load(path, verify_integrity);
     if (!spec) {
+        fprintf(stderr, "DEBUG: psam_composite_load_file - psamc_load failed\n");
         return NULL;
     }
 
+    fprintf(stderr, "DEBUG: psam_composite_load_file - psamc_load succeeded, refs=%u\n", spec->manifest.num_references);
     if (spec->manifest.num_references == 0) {
+        fprintf(stderr, "DEBUG: psam_composite_load_file - no references\n");
         psamc_free(spec);
         return NULL;
     }
@@ -330,14 +340,19 @@ psam_composite_t* psam_composite_load_file(const char* path, bool verify_integri
         spec->topology.base_ref_index = 0;
     }
 
+    fprintf(stderr, "DEBUG: psam_composite_load_file - loading base model from ref_index=%u, url='%s'\n",
+            spec->topology.base_ref_index, spec->manifest.refs[spec->topology.base_ref_index].url);
     psam_model_t* base_model = load_model_from_ref(path, &spec->manifest.refs[spec->topology.base_ref_index]);
     if (!base_model) {
+        fprintf(stderr, "DEBUG: psam_composite_load_file - load_model_from_ref failed for base\n");
         psamc_free(spec);
         return NULL;
     }
+    fprintf(stderr, "DEBUG: psam_composite_load_file - base model loaded successfully\n");
 
     psam_composite_t* composite = psam_create_layered(base_model);
     if (!composite) {
+        fprintf(stderr, "DEBUG: psam_composite_load_file - psam_create_layered failed\n");
         psam_destroy(base_model);
         psamc_free(spec);
         return NULL;
@@ -345,13 +360,17 @@ psam_composite_t* psam_composite_load_file(const char* path, bool verify_integri
     composite->owns_base = true;
     psam_composite_set_base_weight(composite, spec->topology.base_weight);
 
+    fprintf(stderr, "DEBUG: psam_composite_load_file - loading %u overlay layers\n", spec->topology.layer_count);
     for (uint32_t i = 0; i < spec->topology.layer_count; ++i) {
         const psamc_layer_entry_t* entry = &spec->topology.layers[i];
         if (entry->ref_index >= spec->manifest.num_references) {
             continue;
         }
+        fprintf(stderr, "DEBUG: loading layer %u, ref_index=%u, url='%s'\n",
+                i, entry->ref_index, spec->manifest.refs[entry->ref_index].url);
         psam_model_t* overlay = load_model_from_ref(path, &spec->manifest.refs[entry->ref_index]);
         if (!overlay) {
+            fprintf(stderr, "DEBUG: failed to load overlay layer %u\n", i);
             psam_composite_destroy(composite);
             psamc_free(spec);
             return NULL;
@@ -360,6 +379,7 @@ psam_composite_t* psam_composite_load_file(const char* path, bool verify_integri
         const char* layer_id = entry->layer_id[0] != '\0'
             ? entry->layer_id
             : (snprintf(fallback_id, sizeof(fallback_id), "layer-%u", i), fallback_id);
+        fprintf(stderr, "DEBUG: adding layer '%s' with weight=%.3f\n", layer_id, entry->weight);
         psam_error_t err = composite_add_layer_internal(
             composite,
             layer_id,
@@ -368,13 +388,16 @@ psam_composite_t* psam_composite_load_file(const char* path, bool verify_integri
             true
         );
         if (err != PSAM_OK) {
+            fprintf(stderr, "DEBUG: composite_add_layer_internal failed with err=%d\n", err);
             psam_destroy(overlay);
             psam_composite_destroy(composite);
             psamc_free(spec);
             return NULL;
         }
+        fprintf(stderr, "DEBUG: layer %u added successfully\n", i);
     }
 
+    fprintf(stderr, "DEBUG: psam_composite_load_file - all layers loaded, returning composite\n");
     psamc_free(spec);
     return composite;
 }

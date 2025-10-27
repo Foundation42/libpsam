@@ -14,7 +14,7 @@ include(GNUInstallDirs)
 
 # Compiler flags
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -O3 -fPIC)
+    add_compile_options(-Wall -Wextra -Werror -O3 -fPIC)
 endif()
 
 # Thread support

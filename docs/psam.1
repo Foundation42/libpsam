@@ -104,6 +104,30 @@ psam build --input data.txt \\
            --out model.psam \\
            --vocab-out vocab.tsv
 .fi
+.SS Train with shared vocabulary
+.PP
+Train multiple models with the same vocabulary for compositing:
+.PP
+.nf
+# Step 1: Build unified vocabulary
+psam build --input all_texts.txt \\
+           --out temp.psam \\
+           --vocab-out unified.tsv
+
+# Step 2: Train each text with shared vocabulary
+psam build --input text1.txt \\
+           --vocab-in unified.tsv \\
+           --out model1.psam
+
+psam build --input text2.txt \\
+           --vocab-in unified.tsv \\
+           --out model2.psam
+
+# Step 3: Create composite (vocabularies match)
+psam compose --out combined.psamc \\
+             --layer model1.psam \\
+             --layer model2.psam
+.fi
 .SS Generate a continuation
 .PP
 .nf

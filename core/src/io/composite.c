@@ -900,7 +900,6 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
 
     bool manifest_loaded = false;
     bool config_loaded = false;
-    bool sampler_loaded = false;
     uint64_t manifest_hash_offset = 0;
 
     for (uint32_t i = 0; i < header.num_sections; i++) {
@@ -935,8 +934,6 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
                 if (read_sampler_section(f, section, &sampler_defaults) != 0) {
                     /* Non-fatal: use defaults if sampler section is malformed */
                     init_sampler_defaults(&sampler_defaults);
-                } else {
-                    sampler_loaded = true;
                 }
                 break;
             default:

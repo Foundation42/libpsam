@@ -146,16 +146,6 @@ static psam_logit_transform_t parse_logit_transform(const char* str) {
     return PSAM_LOGIT_ZSCORE; /* default */
 }
 
-static const char* logit_transform_to_string(psam_logit_transform_t t) {
-    switch (t) {
-        case PSAM_LOGIT_RAW: return "raw";
-        case PSAM_LOGIT_ZSCORE: return "zscore";
-        case PSAM_LOGIT_CALIBRATED: return "calibrated";
-        case PSAM_LOGIT_LEGACY: return "legacy";
-        default: return "zscore";
-    }
-}
-
 static int sample_prediction(const psam_prediction_t* preds,
                              int num_preds,
                              uint32_t top_k,
@@ -488,6 +478,7 @@ typedef struct {
     string_list_t inputs;
     const char* output_model;
     const char* output_vocab;
+    const char* input_vocab;   /* Optional: pre-built vocabulary TSV */
     uint32_t window;
     uint32_t top_k;
     float alpha;
@@ -496,9 +487,69 @@ typedef struct {
 static void build_usage(void) {
     printf("Usage: psam build --input file.txt [--input other.txt] --out model.psam --vocab-out vocab.tsv [options]\n");
     printf("Options:\n");
+    printf("  --vocab-in <tsv>    Use pre-built vocabulary (skips vocab discovery)\n");
     printf("  --window <n>        Context window (default 8)\n");
     printf("  --top_k <n>         Top-K predictions stored during inference (default 32)\n");
     printf("  --alpha <f>         Distance decay parameter (default 0.1)\n");
+}
+
+/* Load vocabulary from TSV file (format: "id\ttoken\n") */
+static int load_vocab_from_tsv(const char* path, char*** out_tokens, size_t* out_count) {
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        print_error("failed to open vocab '%s': %s", path, strerror(errno));
+        return EXIT_FILE_MISSING;
+    }
+
+    string_list_t temp_tokens = {0};
+    char line[4096];
+    uint32_t expected_id = 0;
+
+    while (fgets(line, sizeof(line), f)) {
+        /* Parse: "id\ttoken\n" */
+        char* tab = strchr(line, '\t');
+        if (!tab) {
+            print_error("malformed vocab line (missing tab): %s", line);
+            string_list_free(&temp_tokens);
+            fclose(f);
+            return EXIT_BAD_ARGS;
+        }
+
+        /* Verify ID is sequential - temporarily null-terminate at tab for parsing */
+        *tab = '\0';
+        uint32_t id = 0;
+        if (parse_uint32(line, &id) != 0 || id != expected_id) {
+            print_error("vocab IDs must be sequential starting at 0, got %u expected %u", id, expected_id);
+            string_list_free(&temp_tokens);
+            fclose(f);
+            return EXIT_BAD_ARGS;
+        }
+        *tab = '\t';  /* Restore tab for error messages */
+        expected_id++;
+
+        /* Extract token (skip tab, trim newline) */
+        char* token_start = tab + 1;
+        size_t token_len = strlen(token_start);
+        if (token_len > 0 && token_start[token_len - 1] == '\n') {
+            token_start[token_len - 1] = '\0';
+        }
+
+        if (string_list_append(&temp_tokens, token_start) != 0) {
+            string_list_free(&temp_tokens);
+            fclose(f);
+            return EXIT_INTERNAL;
+        }
+    }
+    fclose(f);
+
+    if (temp_tokens.size == 0) {
+        print_error("empty vocabulary file");
+        return EXIT_BAD_ARGS;
+    }
+
+    *out_tokens = temp_tokens.data;
+    *out_count = temp_tokens.size;
+    return EXIT_OK;
 }
 
 static int read_tokens_from_file(const char* path, string_list_t* tokens) {
@@ -555,6 +606,12 @@ static int build_command(int argc, char** argv) {
                 RETURN_BUILD(EXIT_BAD_ARGS);
             }
             opts.output_vocab = argv[i];
+        } else if (strcmp(arg, "--vocab-in") == 0) {
+            if (++i >= argc) {
+                build_usage();
+                RETURN_BUILD(EXIT_BAD_ARGS);
+            }
+            opts.input_vocab = argv[i];
         } else if (strcmp(arg, "--window") == 0) {
             if (++i >= argc || parse_uint32(argv[i], &opts.window) != 0) {
                 build_usage();
@@ -580,8 +637,16 @@ static int build_command(int argc, char** argv) {
         }
     }
 
-    if (opts.inputs.size == 0 || !opts.output_model || !opts.output_vocab) {
-        print_error("build requires --input, --out, and --vocab-out");
+    if (opts.inputs.size == 0 || !opts.output_model) {
+        print_error("build requires --input and --out");
+        build_usage();
+        RETURN_BUILD(EXIT_BAD_ARGS);
+    }
+
+    /* If using pre-built vocab, --vocab-out is optional (for convenience, to copy it) */
+    /* If discovering vocab, --vocab-out is required */
+    if (!opts.input_vocab && !opts.output_vocab) {
+        print_error("build requires either --vocab-in (use existing) or --vocab-out (create new)");
         build_usage();
         RETURN_BUILD(EXIT_BAD_ARGS);
     }
@@ -616,32 +681,52 @@ static int build_command(int argc, char** argv) {
         }
     }
 
-    if (unique_count == 0) {
-        free(sorted);
-        string_list_free(&tokens);
-        print_error("no unique tokens discovered");
-        return EXIT_BAD_ARGS;
-    }
+    /* Build or load vocabulary */
+    char** id_to_token = NULL;
+    size_t vocab_size = 0;
 
-    char** id_to_token = malloc(unique_count * sizeof(char*));
-    if (!id_to_token) {
-        free(sorted);
-        string_list_free(&tokens);
-        RETURN_BUILD(EXIT_INTERNAL);
-    }
-    for (size_t i = 0; i < unique_count; ++i) {
-        id_to_token[i] = strdup(sorted[i]);
-        if (!id_to_token[i]) {
-            for (size_t j = 0; j < i; ++j) free(id_to_token[j]);
-            free(id_to_token);
+    if (opts.input_vocab) {
+        /* Load pre-built vocabulary from TSV */
+        int rc = load_vocab_from_tsv(opts.input_vocab, &id_to_token, &vocab_size);
+        if (rc != EXIT_OK) {
+            free(sorted);
+            string_list_free(&tokens);
+            RETURN_BUILD(rc);
+        }
+        fprintf(stderr, "INFO: Loaded %zu tokens from vocabulary '%s'\n", vocab_size, opts.input_vocab);
+        free(sorted);  /* Don't need sorted array if using pre-built vocab */
+        sorted = NULL;
+    } else {
+        /* Discover vocabulary from input - use sorted array */
+        if (unique_count == 0) {
+            free(sorted);
+            string_list_free(&tokens);
+            print_error("no unique tokens discovered");
+            RETURN_BUILD(EXIT_BAD_ARGS);
+        }
+
+        vocab_size = unique_count;
+        id_to_token = malloc(vocab_size * sizeof(char*));
+        if (!id_to_token) {
             free(sorted);
             string_list_free(&tokens);
             RETURN_BUILD(EXIT_INTERNAL);
         }
+        for (size_t i = 0; i < vocab_size; ++i) {
+            id_to_token[i] = strdup(sorted[i]);
+            if (!id_to_token[i]) {
+                for (size_t j = 0; j < i; ++j) free(id_to_token[j]);
+                free(id_to_token);
+                free(sorted);
+                string_list_free(&tokens);
+                RETURN_BUILD(EXIT_INTERNAL);
+            }
+        }
     }
 
+    /* Create model with discovered or loaded vocabulary */
     psam_config_t config = {
-        .vocab_size = (uint32_t)unique_count,
+        .vocab_size = (uint32_t)vocab_size,
         .window = opts.window,
         .top_k = opts.top_k,
         .alpha = opts.alpha,
@@ -654,38 +739,71 @@ static int build_command(int argc, char** argv) {
     psam_model_t* model = psam_create_with_config(&config);
     if (!model) {
         print_error("failed to create model (vocab_size=%u)", config.vocab_size);
-        for (size_t i = 0; i < unique_count; ++i) free(id_to_token[i]);
+        for (size_t i = 0; i < vocab_size; ++i) free(id_to_token[i]);
         free(id_to_token);
-        free(sorted);
+        if (sorted) free(sorted);
         string_list_free(&tokens);
         RETURN_BUILD(EXIT_INTERNAL);
     }
 
+    /* Convert tokens to IDs */
     uint32_t* sequence = malloc(tokens.size * sizeof(uint32_t));
     if (!sequence) {
         psam_destroy(model);
-        for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
+        for (size_t j = 0; j < vocab_size; ++j) free(id_to_token[j]);
         free(id_to_token);
-        free(sorted);
+        if (sorted) free(sorted);
         string_list_free(&tokens);
         RETURN_BUILD(EXIT_INTERNAL);
     }
 
+    size_t unknown_tokens = 0;
     for (size_t i = 0; i < tokens.size; ++i) {
         char* tok = tokens.data[i];
-        char** found = bsearch(&tok, sorted, unique_count, sizeof(char*), compare_str_ptr);
-        if (!found) {
-            print_error("internal error: token lookup failed for '%s'", tok);
-            free(sequence);
-            psam_destroy(model);
-            for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
-            free(id_to_token);
-            free(sorted);
-            string_list_free(&tokens);
-            RETURN_BUILD(EXIT_INTERNAL);
+
+        /* Search for token in vocabulary */
+        char** found = NULL;
+        if (sorted) {
+            /* vocab discovery path: use sorted array */
+            found = bsearch(&tok, sorted, vocab_size, sizeof(char*), compare_str_ptr);
+        } else {
+            /* pre-loaded vocab path: search id_to_token array */
+            for (size_t v = 0; v < vocab_size; ++v) {
+                if (strcmp(id_to_token[v], tok) == 0) {
+                    found = &id_to_token[v];
+                    break;
+                }
+            }
         }
-        uint32_t id = (uint32_t)(found - sorted);
+
+        if (!found) {
+            if (unknown_tokens == 0) {
+                print_error("token '%s' not found in vocabulary (first occurrence)", tok);
+            }
+            unknown_tokens++;
+            /* For now, skip unknown tokens - could also map to UNK */
+            sequence[i] = UINT32_MAX;  /* Sentinel for unknown */
+            continue;
+        }
+
+        uint32_t id;
+        if (sorted) {
+            id = (uint32_t)(found - sorted);
+        } else {
+            id = (uint32_t)(found - id_to_token);
+        }
         sequence[i] = id;
+    }
+
+    if (unknown_tokens > 0) {
+        print_error("%zu unknown tokens found (not in vocabulary)", unknown_tokens);
+        free(sequence);
+        psam_destroy(model);
+        for (size_t j = 0; j < vocab_size; ++j) free(id_to_token[j]);
+        free(id_to_token);
+        if (sorted) free(sorted);
+        string_list_free(&tokens);
+        RETURN_BUILD(EXIT_BAD_ARGS);
     }
 
     psam_error_t batch_err = psam_train_batch(model, sequence, tokens.size);
@@ -693,9 +811,9 @@ static int build_command(int argc, char** argv) {
     if (batch_err != PSAM_OK) {
         print_error("psam_train_batch failed (%d)", batch_err);
         psam_destroy(model);
-        for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
+        for (size_t j = 0; j < vocab_size; ++j) free(id_to_token[j]);
         free(id_to_token);
-        free(sorted);
+        if (sorted) free(sorted);
         string_list_free(&tokens);
         RETURN_BUILD(EXIT_INTERNAL);
     }
@@ -704,9 +822,9 @@ static int build_command(int argc, char** argv) {
     if (finalize_err != PSAM_OK) {
         print_error("psam_finalize_training failed (%d)", finalize_err);
         psam_destroy(model);
-        for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
+        for (size_t j = 0; j < vocab_size; ++j) free(id_to_token[j]);
         free(id_to_token);
-        free(sorted);
+        if (sorted) free(sorted);
         string_list_free(&tokens);
         RETURN_BUILD(EXIT_INTERNAL);
     }
@@ -723,9 +841,9 @@ static int build_command(int argc, char** argv) {
     if (psam_set_provenance(model, &prov) != PSAM_OK) {
         print_error("failed to set provenance");
         psam_destroy(model);
-        for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
+        for (size_t j = 0; j < vocab_size; ++j) free(id_to_token[j]);
         free(id_to_token);
-        free(sorted);
+        if (sorted) free(sorted);
         string_list_free(&tokens);
         RETURN_BUILD(EXIT_INTERNAL);
     }
@@ -734,35 +852,38 @@ static int build_command(int argc, char** argv) {
     if (save_err != PSAM_OK) {
         print_error("psam_save failed (%d)", save_err);
         psam_destroy(model);
-        for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
+        for (size_t j = 0; j < vocab_size; ++j) free(id_to_token[j]);
         free(id_to_token);
-        free(sorted);
+        if (sorted) free(sorted);
         string_list_free(&tokens);
         RETURN_BUILD(EXIT_INTERNAL);
     }
 
-    FILE* vocab_file = fopen(opts.output_vocab, "w");
-    if (!vocab_file) {
-        print_error("failed to write vocab '%s': %s", opts.output_vocab, strerror(errno));
-        psam_destroy(model);
-        for (size_t j = 0; j < unique_count; ++j) free(id_to_token[j]);
-        free(id_to_token);
-        free(sorted);
-        string_list_free(&tokens);
-        RETURN_BUILD(EXIT_INTERNAL);
+    /* Save vocabulary if output path specified */
+    if (opts.output_vocab) {
+        FILE* vocab_file = fopen(opts.output_vocab, "w");
+        if (!vocab_file) {
+            print_error("failed to write vocab '%s': %s", opts.output_vocab, strerror(errno));
+            psam_destroy(model);
+            for (size_t j = 0; j < vocab_size; ++j) free(id_to_token[j]);
+            free(id_to_token);
+            if (sorted) free(sorted);
+            string_list_free(&tokens);
+            RETURN_BUILD(EXIT_INTERNAL);
+        }
+        for (size_t i = 0; i < vocab_size; ++i) {
+            fprintf(vocab_file, "%zu\t%s\n", i, id_to_token[i]);
+        }
+        fclose(vocab_file);
     }
-    for (size_t i = 0; i < unique_count; ++i) {
-        fprintf(vocab_file, "%zu\t%s\n", i, id_to_token[i]);
-    }
-    fclose(vocab_file);
 
     printf("{\"status\":\"ok\",\"model\":\"%s\",\"vocab\":\"%s\",\"tokens\":%zu,\"vocab_size\":%zu}\n",
-           opts.output_model, opts.output_vocab, tokens.size, unique_count);
+           opts.output_model, opts.output_vocab ? opts.output_vocab : opts.input_vocab, tokens.size, vocab_size);
 
     psam_destroy(model);
-    for (size_t i = 0; i < unique_count; ++i) free(id_to_token[i]);
+    for (size_t i = 0; i < vocab_size; ++i) free(id_to_token[i]);
     free(id_to_token);
-    free(sorted);
+    if (sorted) free(sorted);
     string_list_free(&tokens);
     string_list_free(&opts.inputs);
     return EXIT_OK;
@@ -924,19 +1045,35 @@ static int generate_command(int argc, char** argv) {
         }
     }
 
-    psam_model_t* model = psam_load(opts.model_path);
-    if (!model) {
-        print_error("failed to load model '%s'", opts.model_path);
-        vocab_free(&vocab);
-        u32_list_free(&context);
-        return EXIT_FILE_MISSING;
+    /* Check if composite or regular model */
+    bool is_composite = has_suffix(opts.model_path, ".psamc");
+    psam_model_t* model = NULL;
+    psam_composite_t* composite = NULL;
+
+    if (is_composite) {
+        composite = psam_composite_load_file(opts.model_path, false);
+        if (!composite) {
+            print_error("failed to load composite model '%s'", opts.model_path);
+            vocab_free(&vocab);
+            u32_list_free(&context);
+            return EXIT_FILE_MISSING;
+        }
+    } else {
+        model = psam_load(opts.model_path);
+        if (!model) {
+            print_error("failed to load model '%s'", opts.model_path);
+            vocab_free(&vocab);
+            u32_list_free(&context);
+            return EXIT_FILE_MISSING;
+        }
     }
 
     uint32_t predict_cap = opts.top_k ? opts.top_k : 64;
     if (predict_cap < 8) predict_cap = 8;
     psam_prediction_t* preds = calloc(predict_cap, sizeof(psam_prediction_t));
     if (!preds) {
-        psam_destroy(model);
+        if (model) psam_destroy(model);
+        if (composite) psam_composite_destroy(composite);
         vocab_free(&vocab);
         u32_list_free(&context);
         return EXIT_INTERNAL;
@@ -959,7 +1096,12 @@ static int generate_command(int argc, char** argv) {
     for (uint32_t step = 0; step < opts.count; ++step) {
         /* Use new sampler API */
         sampler.seed = rng_state;  /* Update seed for each step */
-        int num_preds = psam_predict_with_sampler(model, context.data, context.size, &sampler, preds, predict_cap);
+        int num_preds;
+        if (is_composite) {
+            num_preds = psam_composite_predict_with_sampler(composite, context.data, context.size, &sampler, preds, predict_cap);
+        } else {
+            num_preds = psam_predict_with_sampler(model, context.data, context.size, &sampler, preds, predict_cap);
+        }
         if (num_preds <= 0) {
             break;
         }
@@ -991,7 +1133,8 @@ static int generate_command(int argc, char** argv) {
     }
 
     free(preds);
-    psam_destroy(model);
+    if (model) psam_destroy(model);
+    if (composite) psam_composite_destroy(composite);
 
     if (opts.quiet) {
         printf("\n");
@@ -1148,17 +1291,33 @@ static int predict_command(int argc, char** argv) {
         }
     }
 
-    psam_model_t* model = psam_load(opts.model_path);
-    if (!model) {
-        print_error("failed to load model '%s'", opts.model_path);
-        vocab_free(&vocab);
-        u32_list_free(&context);
-        return EXIT_FILE_MISSING;
+    /* Check if composite or regular model */
+    bool is_composite = has_suffix(opts.model_path, ".psamc");
+    psam_model_t* model = NULL;
+    psam_composite_t* composite = NULL;
+
+    if (is_composite) {
+        composite = psam_composite_load_file(opts.model_path, false);
+        if (!composite) {
+            print_error("failed to load composite model '%s'", opts.model_path);
+            vocab_free(&vocab);
+            u32_list_free(&context);
+            return EXIT_FILE_MISSING;
+        }
+    } else {
+        model = psam_load(opts.model_path);
+        if (!model) {
+            print_error("failed to load model '%s'", opts.model_path);
+            vocab_free(&vocab);
+            u32_list_free(&context);
+            return EXIT_FILE_MISSING;
+        }
     }
 
     if (context.size == 0) {
         print_error("empty context");
-        psam_destroy(model);
+        if (model) psam_destroy(model);
+        if (composite) psam_composite_destroy(composite);
         vocab_free(&vocab);
         u32_list_free(&context);
         return EXIT_BAD_ARGS;
@@ -1167,7 +1326,8 @@ static int predict_command(int argc, char** argv) {
     uint32_t predict_count = opts.top_k ? opts.top_k : 16;
     psam_prediction_t* preds = calloc(predict_count, sizeof(psam_prediction_t));
     if (!preds) {
-        psam_destroy(model);
+        if (model) psam_destroy(model);
+        if (composite) psam_composite_destroy(composite);
         vocab_free(&vocab);
         u32_list_free(&context);
         return EXIT_INTERNAL;
@@ -1182,11 +1342,17 @@ static int predict_command(int argc, char** argv) {
         .seed = 42
     };
 
-    int num_preds = psam_predict_with_sampler(model, context.data, context.size, &sampler, preds, predict_count);
+    int num_preds;
+    if (is_composite) {
+        num_preds = psam_composite_predict_with_sampler(composite, context.data, context.size, &sampler, preds, predict_count);
+    } else {
+        num_preds = psam_predict_with_sampler(model, context.data, context.size, &sampler, preds, predict_count);
+    }
     if (num_preds < 0) {
-        print_error("psam_predict_with_sampler failed (%d)", num_preds);
+        print_error("predict failed (%d)", num_preds);
         free(preds);
-        psam_destroy(model);
+        if (model) psam_destroy(model);
+        if (composite) psam_composite_destroy(composite);
         vocab_free(&vocab);
         u32_list_free(&context);
         return EXIT_INTERNAL;
@@ -1230,7 +1396,8 @@ static int predict_command(int argc, char** argv) {
     }
 
     free(preds);
-    psam_destroy(model);
+    if (model) psam_destroy(model);
+    if (composite) psam_composite_destroy(composite);
     vocab_free(&vocab);
     u32_list_free(&context);
     return EXIT_OK;
@@ -1468,6 +1635,12 @@ static int analyze_command(int argc, char** argv) {
     if (!model_path) {
         print_error("analyze requires --model");
         analyze_usage();
+        return EXIT_BAD_ARGS;
+    }
+
+    /* Composite models not supported for analyze (would need to aggregate stats) */
+    if (has_suffix(model_path, ".psamc")) {
+        print_error("analyze does not support composite models (use inspect instead)");
         return EXIT_BAD_ARGS;
     }
 
