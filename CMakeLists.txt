@@ -52,6 +52,7 @@ install(TARGETS psam_cli
 install(FILES
     core/include/psam.h
     core/include/psam_composite.h
+    core/include/psam_vocab_alignment.h
     core/include/psam_export.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )

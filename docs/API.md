@@ -473,6 +473,162 @@ Load a `.psamc` manifest, verify referenced hashes (if requested), and instantia
 
 > **Harness:** `scripts/shakespeare_harness.py` shows these functions in context—training tragedy/comedy overlays, emitting blended `.psamc` files with `psam_composite_save_file`, and reloading them via `psam_composite_load_file` for regression testing.
 
+#### Vocabulary Alignment (Mixed-Vocabulary Composites)
+
+PSAM supports composites with different vocabularies through automatic token ID remapping. This enables blending models trained on different corpora without requiring unified vocabularies during training.
+
+```c
+#include <psam_vocab_alignment.h>
+```
+
+##### Types
+
+###### `psam_vocab_alignment_t`
+
+Opaque handle containing:
+- **Unified vocabulary**: Superset of all layer vocabularies (sorted lexicographically)
+- **Per-layer remapping tables**: Bidirectional mappings between local and unified ID spaces
+- **Coverage statistics**: Percentage of unified vocabulary known to each layer
+
+###### `psam_vocab_remap_t`
+
+Per-layer remapping structure:
+- **Dense local→unified map**: O(1) array lookup, `local_vocab_size × 4 bytes`
+- **Sparse unified→local map**: O(log N) binary search, `~8 bytes per local token`
+
+###### `psam_unknown_policy_t`
+
+```c
+typedef enum {
+    PSAM_UNKNOWN_SKIP = 0,      // Drop unknown tokens from layer's context
+    PSAM_UNKNOWN_MAP_UNK = 1,   // Map to reserved UNK token (ID = vocab_size - 1)
+    PSAM_UNKNOWN_COVERAGE = 2   // Weight layer by coverage: known_tokens / total_tokens
+} psam_unknown_policy_t;
+```
+
+##### Building Alignment
+
+###### `psam_build_vocab_alignment_from_files`
+
+```c
+psam_vocab_alignment_t* psam_build_vocab_alignment_from_files(
+    const char** vocab_paths,
+    size_t n_vocabs,
+    const char** layer_ids,
+    uint32_t* out_unified_vocab_size
+);
+```
+
+Build vocabulary alignment from TSV vocabulary files.
+
+**Parameters:**
+- `vocab_paths`: Array of vocabulary file paths (TSV format: "id\ttoken\n")
+- `n_vocabs`: Number of vocabulary files (typically n_layers + 1 for base)
+- `layer_ids`: Optional layer identifiers for debugging (may be NULL)
+- `out_unified_vocab_size`: [out] Size of unified vocabulary
+
+**Returns:** Alignment structure, or NULL on error
+
+**Example:**
+```c
+const char* vocabs[] = {"hamlet.tsv", "macbeth.tsv"};
+uint32_t unified_size;
+psam_vocab_alignment_t* align = psam_build_vocab_alignment_from_files(
+    vocabs, 2, NULL, &unified_size);
+
+// Result: Unified vocab contains all unique tokens from both plays
+// Hamlet: 7,603 tokens → 71% coverage of 10,682 unified tokens
+// Macbeth: 5,300 tokens → 50% coverage of 10,682 unified tokens
+```
+
+###### `psam_vocab_alignment_destroy`
+
+```c
+void psam_vocab_alignment_destroy(psam_vocab_alignment_t* alignment);
+```
+
+Free alignment structure and all associated memory.
+
+##### Remapping Functions
+
+###### `psam_vocab_remap_local_to_unified`
+
+```c
+uint32_t psam_vocab_remap_local_to_unified(
+    const psam_vocab_remap_t* remap,
+    uint32_t local_id
+);
+```
+
+Map token ID from layer's local vocabulary to unified vocabulary space.
+
+**Returns:** Unified token ID, or `PSAM_VOCAB_INVALID_ID` if invalid
+
+**Performance:** O(1) array lookup
+
+###### `psam_vocab_remap_unified_to_local`
+
+```c
+uint32_t psam_vocab_remap_unified_to_local(
+    const psam_vocab_remap_t* remap,
+    uint32_t unified_id
+);
+```
+
+Map token ID from unified vocabulary to layer's local vocabulary space.
+
+**Returns:** Local token ID, or `PSAM_VOCAB_INVALID_ID` if layer doesn't know this token
+
+**Performance:** O(log N) binary search where N = tokens in layer
+
+###### `psam_vocab_alignment_get_coverage`
+
+```c
+float psam_vocab_alignment_get_coverage(
+    const psam_vocab_alignment_t* alignment,
+    uint32_t layer_index
+);
+```
+
+Get vocabulary coverage for a specific layer.
+
+**Returns:** Coverage ratio (0.0 to 1.0), or -1.0 on error
+
+**Example:**
+```c
+float coverage = psam_vocab_alignment_get_coverage(align, 0);
+// coverage = 0.712 means layer knows 71.2% of unified vocabulary
+```
+
+##### Usage Pattern
+
+**Step 1: Train models with individual vocabularies**
+```bash
+psam build --input hamlet.txt --out hamlet.psam --vocab-out hamlet.tsv
+psam build --input macbeth.txt --out macbeth.psam --vocab-out macbeth.tsv
+```
+
+**Step 2: Build alignment from vocabulary files**
+```c
+const char* vocabs[] = {"hamlet.tsv", "macbeth.tsv"};
+uint32_t unified_size;
+psam_vocab_alignment_t* align = psam_build_vocab_alignment_from_files(
+    vocabs, 2, NULL, &unified_size);
+```
+
+**Step 3: Create aligned composite (Week 3 API)**
+```c
+// Coming in Week 3: psam_create_composite_aligned()
+// This will wrap a standard composite and add automatic remapping
+```
+
+##### Design Notes
+
+- **Deterministic IDs**: Unified vocabulary is sorted lexicographically, ensuring consistent token IDs across runs
+- **Memory efficient**: ~12 bytes per token (4 bytes dense + ~8 bytes sparse)
+- **Fast lookups**: O(1) for local→unified (hot path during prediction), O(log N) for unified→local
+- **Coverage-aware mixing**: Future support for weighting layers by vocabulary overlap with context
+
 #### Persistence
 
 ##### `psam_save`

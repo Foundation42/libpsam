@@ -46,3 +46,12 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Corpora and trained models (exclude from git)
+corpora/
+*.psam
+*.psamc
+*.tsv
+test_vocab_alignment.c
+test_vocab_alignment
+COMPOSITE_VOCAB_TODO.md
