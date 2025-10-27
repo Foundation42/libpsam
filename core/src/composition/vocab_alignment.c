@@ -415,19 +415,48 @@ float psam_vocab_alignment_get_coverage(
     return alignment->layer_remaps[layer_index].coverage;
 }
 
-/* Placeholder implementations for aligned composite functions */
-/* These will be implemented in Week 3 */
+/* ========================================================================
+ * Aligned Composite Implementation (Week 3)
+ * ======================================================================== */
 
 psam_composite_aligned_t* psam_create_composite_aligned(
     psam_model_t* base,
     psam_vocab_alignment_t* alignment,
     bool owns_alignment
 ) {
-    (void)base;
-    (void)alignment;
-    (void)owns_alignment;
-    fprintf(stderr, "psam_create_composite_aligned: not yet implemented\n");
-    return NULL;
+    if (!base || !alignment) {
+        fprintf(stderr, "ERROR: psam_create_composite_aligned requires base model and alignment\n");
+        return NULL;
+    }
+
+    if (alignment->num_layers < 1) {
+        fprintf(stderr, "ERROR: Alignment must have at least one layer (base)\n");
+        return NULL;
+    }
+
+    /* Create standard composite with base model */
+    psam_composite_t* composite = psam_create_layered(base);
+    if (!composite) {
+        fprintf(stderr, "ERROR: Failed to create layered composite\n");
+        return NULL;
+    }
+
+    /* Wrap in aligned composite structure */
+    psam_composite_aligned_t* aligned = calloc(1, sizeof(psam_composite_aligned_t));
+    if (!aligned) {
+        psam_composite_destroy(composite);
+        return NULL;
+    }
+
+    aligned->composite = composite;
+    aligned->alignment = alignment;
+    aligned->owns_composite = true;
+    aligned->owns_alignment = owns_alignment;
+
+    fprintf(stderr, "INFO: Created aligned composite with %u-token unified vocabulary\n",
+            alignment->unified_vocab_size);
+
+    return aligned;
 }
 
 int psam_composite_aligned_add_layer(
@@ -437,13 +466,31 @@ int psam_composite_aligned_add_layer(
     float weight,
     bool owns_model
 ) {
-    (void)composite;
-    (void)layer_id;
-    (void)model;
-    (void)weight;
-    (void)owns_model;
-    fprintf(stderr, "psam_composite_aligned_add_layer: not yet implemented\n");
-    return -1;
+    if (!composite || !composite->composite || !layer_id || !model) {
+        fprintf(stderr, "ERROR: Invalid arguments to psam_composite_aligned_add_layer\n");
+        return -1;
+    }
+
+    /* Add layer to underlying composite
+     * Note: Layer ownership is handled by caller, not by aligned composite */
+    (void)owns_model;  /* Unused for now - caller manages model lifetime */
+
+    psam_error_t err = psam_composite_add_layer(
+        composite->composite,
+        layer_id,
+        model,
+        weight
+    );
+
+    if (err != PSAM_OK) {
+        fprintf(stderr, "ERROR: Failed to add layer '%s' to composite: %d\n", layer_id, err);
+        return -1;
+    }
+
+    fprintf(stderr, "INFO: Added layer '%s' with weight %.3f to aligned composite\n",
+            layer_id, weight);
+
+    return 0;
 }
 
 int psam_composite_aligned_predict(
@@ -453,13 +500,52 @@ int psam_composite_aligned_predict(
     void* out_preds,
     size_t max_preds
 ) {
-    (void)composite;
-    (void)context;
-    (void)context_len;
-    (void)out_preds;
-    (void)max_preds;
-    fprintf(stderr, "psam_composite_aligned_predict: not yet implemented\n");
-    return -1;
+    if (!composite || !composite->composite || !composite->alignment) {
+        fprintf(stderr, "ERROR: Invalid aligned composite\n");
+        return -1;
+    }
+
+    if (!context || context_len == 0 || !out_preds || max_preds == 0) {
+        fprintf(stderr, "ERROR: Invalid prediction parameters\n");
+        return -1;
+    }
+
+    /* For now, delegate to standard composite prediction
+     * In the future, this will:
+     * 1. Remap context from unified → local vocab for each layer
+     * 2. Call per-layer prediction
+     * 3. Remap predictions from local → unified vocab
+     * 4. Aggregate and return unified predictions
+     *
+     * Current limitation: Assumes all models already use unified vocabulary
+     * (trained with --vocab-in from Phase 1)
+     */
+
+    psam_prediction_t* preds = (psam_prediction_t*)out_preds;
+
+    /* Use standard composite prediction (assumes unified vocabulary) */
+    int num_preds = psam_composite_predict(
+        composite->composite,
+        context,
+        context_len,
+        preds,
+        max_preds
+    );
+
+    if (num_preds < 0) {
+        fprintf(stderr, "ERROR: Composite prediction failed\n");
+        return -1;
+    }
+
+    /* TODO (Phase 2 Week 4): Add per-layer remapping logic here
+     * This is where we'll implement the full vocabulary alignment:
+     * - Remap context tokens for each layer
+     * - Handle unknown tokens per layer's policy
+     * - Weight layers by coverage if using PSAM_UNKNOWN_COVERAGE
+     * - Aggregate predictions in unified space
+     */
+
+    return num_preds;
 }
 
 void psam_composite_aligned_destroy(psam_composite_aligned_t* composite) {
