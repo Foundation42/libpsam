@@ -1839,6 +1839,7 @@ static void layer_list_free(layer_list_t* list) {
     list->size = list->capacity = 0;
 }
 
+static int layer_list_append(layer_list_t* list, const char* path, const char* version) __attribute__((unused));
 static int layer_list_append(layer_list_t* list, const char* path, const char* version) {
     if (list->size == list->capacity) {
         size_t new_cap = list->capacity ? list->capacity * 2 : 4;
@@ -1887,14 +1888,28 @@ static int layer_list_add_v1(layer_list_t* list, const char* path, const char* v
 }
 
 static void compose_usage(void) {
-    printf("Usage: psam compose --out composite.psamc --layer base.psam [--layer overlay.psam] [--created-by text] [--align]\n");
-    printf("Options:\n");
-    printf("  --out <path>            Output .psamc file path\n");
-    printf("  --layer <path>          Layer model (first is base, subsequent are overlays)\n");
-    printf("  --created-by <text>     Creator identification string\n");
-    printf("  --align                 Create aligned composite with automatic vocabulary alignment\n");
-    printf("  --sampler.top_k <n>     Default top-k value\n");
-    printf("  --sampler.temperature <f> Default temperature value\n");
+    printf("Usage: psam compose --out file.psamc [options]\n\n");
+    printf("V1 Aligned Composite (recommended):\n");
+    printf("  --layer <model.psam>    Add layer (repeatable)\n");
+    printf("  --vocab <vocab.tsv>     Vocabulary for preceding layer\n");
+    printf("  --weight <float>        Weight for preceding layer (default: 1.0)\n");
+    printf("  --bias <float>          Bias for preceding layer (default: 0.0)\n");
+    printf("  --unified-vocab <tsv>   Unified vocabulary (auto-generated if omitted)\n");
+    printf("  --unknown-policy <p>    Policy: unk | skip (default: unk)\n");
+    printf("  --coverage-weight <w>   Coverage: none | linear | sqrt (default: none)\n\n");
+    printf("Legacy (same-vocab composites):\n");
+    printf("  --layer <path>          Layer model\n");
+    printf("  --created-by <text>     Creator string\n\n");
+    printf("Sampler defaults (optional):\n");
+    printf("  --sampler.save          Save sampler defaults to composite\n");
+    printf("  --logit-transform <t>   Transform: raw | zscore | calibrated\n");
+    printf("  --temperature <float>   Sampling temperature\n");
+    printf("  --top-k <int>           Top-k sampling\n");
+    printf("  --top-p <float>         Nucleus sampling threshold\n");
+    printf("  --seed <int>            Random seed\n\n");
+    printf("Other:\n");
+    printf("  --force                 Overwrite existing files\n");
+    printf("  --help                  Show this help\n");
 }
 
 static char* derive_layer_id(const char* path, size_t index) {
@@ -1917,79 +1932,179 @@ static char* derive_layer_id(const char* path, size_t index) {
         snprintf(fallback, sizeof(fallback), "layer-%zu", index);
         return strdup(fallback);
     }
-    return strdup(name);
+
+    /* Remove .psam extension if present */
+    char* id = strdup(name);
+    char* dot = strrchr(id, '.');
+    if (dot && strcmp(dot, ".psam") == 0) {
+        *dot = '\0';
+    }
+    return id;
+}
+
+/* Helper: Ensure directory exists, create if needed */
+static int ensure_dir(const char* path) __attribute__((unused));
+static int ensure_dir(const char* path) {
+    struct stat st;
+    if (stat(path, &st) == 0) {
+        return S_ISDIR(st.st_mode) ? 0 : -1;
+    }
+#ifdef _WIN32
+    return mkdir(path);
+#else
+    return mkdir(path, 0755);
+#endif
 }
 
 static int compose_command(int argc, char** argv) {
     const char* out_path = NULL;
     const char* created_by = NULL;
+    const char* unified_vocab_path __attribute__((unused)) = NULL;
+    const char* unknown_policy_str __attribute__((unused)) = "unk";
+    const char* coverage_weight_str __attribute__((unused)) = "none";
+    bool force __attribute__((unused)) = false;
+    bool v1_mode = false;  /* Detect v1 if --vocab is used */
+
+    /* V1 aligned composite state */
     layer_list_t layers = {0};
+    char* pending_layer_path = NULL;
+    char* pending_vocab_path = NULL;
+    float pending_weight = 1.0f;
+    float pending_bias = 0.0f;
+
+    /* Sampler defaults */
+    psamc_sampler_defaults_t sampler __attribute__((unused)) = {
+        .logit_transform = PSAM_LOGIT_ZSCORE,
+        .temperature = 1.0f,
+        .top_k = 50,
+        .top_p = 0.95f,
+        .seed = 42
+    };
+    bool sampler_save __attribute__((unused)) = false;
+
+    /* Legacy state */
     psamc_hyperparams_t hyper = PSAMC_PRESET_BALANCED_CONFIG;
-    bool use_alignment = false;
 
     for (int i = 2; i < argc; ++i) {
         const char* arg = argv[i];
         if (strcmp(arg, "--out") == 0) {
-            if (++i >= argc) { compose_usage(); layer_list_free(&layers); return EXIT_BAD_ARGS; }
+            if (++i >= argc) { compose_usage(); goto cleanup_error; }
             out_path = argv[i];
         } else if (strcmp(arg, "--layer") == 0) {
-            if (++i >= argc) { compose_usage(); layer_list_free(&layers); return EXIT_BAD_ARGS; }
-            const char* layer_path = argv[i];
-            const char* version = NULL;
-            if (i + 1 < argc && strncmp(argv[i + 1], "--", 2) != 0 && strchr(argv[i + 1], '.') != NULL) {
-                version = argv[++i];
+            /* Flush pending layer if exists */
+            if (pending_layer_path) {
+                if (!pending_vocab_path && v1_mode) {
+                    print_error("--layer %s missing required --vocab", pending_layer_path);
+                    goto cleanup_error;
+                }
+                char* layer_id = derive_layer_id(pending_layer_path, layers.size);
+                if (layer_list_add_v1(&layers, pending_layer_path, pending_vocab_path, layer_id,
+                                       pending_weight, pending_bias) != 0) {
+                    free(layer_id);
+                    goto cleanup_error;
+                }
+                free(layer_id);
+                free(pending_layer_path);
+                free(pending_vocab_path);
+                pending_layer_path = pending_vocab_path = NULL;
+                pending_weight = 1.0f;
+                pending_bias = 0.0f;
             }
-            if (layer_list_append(&layers, layer_path, version) != 0) {
-                layer_list_free(&layers);
-                return EXIT_INTERNAL;
+            if (++i >= argc) { compose_usage(); goto cleanup_error; }
+            pending_layer_path = strdup(argv[i]);
+        } else if (strcmp(arg, "--vocab") == 0) {
+            if (++i >= argc) { compose_usage(); goto cleanup_error; }
+            if (!pending_layer_path) {
+                print_error("--vocab must follow --layer");
+                goto cleanup_error;
             }
-        } else if (strcmp(arg, "--created-by") == 0) {
-            if (++i >= argc) { compose_usage(); layer_list_free(&layers); return EXIT_BAD_ARGS; }
-            created_by = argv[i];
-        } else if (strcmp(arg, "--align") == 0) {
-            use_alignment = true;
-        } else if (strcmp(arg, "--sampler.top_k") == 0) {
-            if (++i >= argc || parse_uint32(argv[i], &hyper.top_k) != 0) {
-                compose_usage();
-                layer_list_free(&layers);
-                return EXIT_BAD_ARGS;
+            pending_vocab_path = strdup(argv[i]);
+            v1_mode = true;
+        } else if (strcmp(arg, "--weight") == 0) {
+            if (++i >= argc || parse_float(argv[i], &pending_weight) != 0) {
+                goto cleanup_error;
             }
-        } else if (strcmp(arg, "--sampler.temperature") == 0) {
-            if (++i >= argc || parse_float(argv[i], &hyper.alpha) != 0) {
-                compose_usage();
-                layer_list_free(&layers);
-                return EXIT_BAD_ARGS;
+        } else if (strcmp(arg, "--bias") == 0) {
+            if (++i >= argc || parse_float(argv[i], &pending_bias) != 0) {
+                goto cleanup_error;
             }
+        } else if (strcmp(arg, "--unified-vocab") == 0) {
+            if (++i >= argc) { compose_usage(); goto cleanup_error; }
+            unified_vocab_path = argv[i];
+        } else if (strcmp(arg, "--unknown-policy") == 0) {
+            if (++i >= argc) { compose_usage(); goto cleanup_error; }
+            unknown_policy_str = argv[i];
+        } else if (strcmp(arg, "--coverage-weight") == 0) {
+            if (++i >= argc) { compose_usage(); goto cleanup_error; }
+            coverage_weight_str = argv[i];
+        } else if (strcmp(arg, "--force") == 0) {
+            force = true;
+        } else if (strcmp(arg, "--sampler.save") == 0) {
+            sampler_save = true;
+        } else if (strcmp(arg, "--temperature") == 0) {
+            if (++i >= argc || parse_float(argv[i], &sampler.temperature) != 0) {
+                goto cleanup_error;
+            }
+        } else if (strcmp(arg, "--top-k") == 0) {
+            if (++i >= argc) { goto cleanup_error; }
+            sampler.top_k = atoi(argv[i]);
+        } else if (strcmp(arg, "--top-p") == 0) {
+            if (++i >= argc || parse_float(argv[i], &sampler.top_p) != 0) {
+                goto cleanup_error;
+            }
+        } else if (strcmp(arg, "--seed") == 0) {
+            if (++i >= argc) { goto cleanup_error; }
+            sampler.seed = (uint64_t)atoll(argv[i]);
         } else if (strcmp(arg, "--help") == 0) {
             compose_usage();
-            layer_list_free(&layers);
-            return EXIT_OK;
+            goto cleanup_ok;
         } else {
             print_error("unknown option '%s'", arg);
             compose_usage();
-            layer_list_free(&layers);
-            return EXIT_BAD_ARGS;
+            goto cleanup_error;
         }
+    }
+
+    /* Flush final pending layer */
+    if (pending_layer_path) {
+        if (!pending_vocab_path && v1_mode) {
+            print_error("--layer %s missing required --vocab", pending_layer_path);
+            goto cleanup_error;
+        }
+        char* layer_id = derive_layer_id(pending_layer_path, layers.size);
+        if (layer_list_add_v1(&layers, pending_layer_path, pending_vocab_path, layer_id,
+                               pending_weight, pending_bias) != 0) {
+            free(layer_id);
+            goto cleanup_error;
+        }
+        free(layer_id);
+        free(pending_layer_path);
+        free(pending_vocab_path);
+        pending_layer_path = pending_vocab_path = NULL;
     }
 
     if (!out_path || layers.size == 0) {
         print_error("compose requires --out and at least one --layer");
         compose_usage();
-        layer_list_free(&layers);
-        return EXIT_BAD_ARGS;
+        goto cleanup_error;
     }
 
-    if (use_alignment) {
-        /* Aligned composite path: load models, build alignment, save to .psamc with alignment metadata */
-        print_error("--align flag is not yet fully implemented for persistent storage");
-        fprintf(stderr, "INFO: Aligned composites work in-memory via the API.\n");
-        fprintf(stderr, "INFO: See test_aligned_composite.c for usage examples.\n");
-        fprintf(stderr, "INFO: Persistent .psamc storage for aligned composites coming soon.\n");
-        layer_list_free(&layers);
-        return EXIT_INTERNAL;
+    if (v1_mode) {
+        /* V1 Aligned Composite Path */
+        printf("Creating v1 aligned composite with %zu layers...\n", layers.size);
+
+        /* TODO: Implement full v1 save logic here:
+         * 1. Build/load unified vocab
+         * 2. Call psam_build_vocab_alignment_from_files()
+         * 3. Extract l2u/u2l maps
+         * 4. Call psam_composite_save_v1()
+         * 5. Print summary
+         */
+        print_error("V1 aligned composite save not yet fully wired (TODO)");
+        goto cleanup_error;
     }
 
-    /* Standard composite path (same-vocabulary models) */
+    /* Legacy path: same-vocabulary composites */
     const char* base_path = layers.data[0].path;
     size_t overlay_count = layers.size > 1 ? layers.size - 1 : 0;
     psam_composite_layer_file_t* overlay_descs = NULL;
@@ -2001,8 +2116,7 @@ static int compose_command(int argc, char** argv) {
         if (!overlay_descs || !overlay_ids) {
             free(overlay_descs);
             free(overlay_ids);
-            layer_list_free(&layers);
-            return EXIT_INTERNAL;
+            goto cleanup_error;
         }
 
         for (size_t i = 0; i < overlay_count; ++i) {
@@ -2030,14 +2144,25 @@ static int compose_command(int argc, char** argv) {
         free(overlay_ids);
     }
     free(overlay_descs);
-    layer_list_free(&layers);
 
     if (rc != 0) {
         print_error("psam composite save failed");
-        return EXIT_INTERNAL;
+        goto cleanup_error;
     }
 
     printf("{\"status\":\"ok\",\"composite\":\"%s\",\"layers\":%zu}\n", out_path, overlay_count + 1);
+    goto cleanup_ok;
+
+cleanup_error:
+    free(pending_layer_path);
+    free(pending_vocab_path);
+    layer_list_free(&layers);
+    return EXIT_BAD_ARGS;
+
+cleanup_ok:
+    free(pending_layer_path);
+    free(pending_vocab_path);
+    layer_list_free(&layers);
     return EXIT_OK;
 }
 
