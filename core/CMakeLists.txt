@@ -10,6 +10,7 @@ set(PSAM_SOURCES
     src/composition/vocab_alignment.c
     src/io/serialize.c
     src/io/composite.c
+    src/io/composite_v1.c
     src/io/sha256.c
 )
 

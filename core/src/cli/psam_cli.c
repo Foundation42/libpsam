@@ -8,6 +8,7 @@
 
 #include "psam.h"
 #include "psam_composite.h"
+#include "psam_vocab_alignment.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -1811,8 +1812,12 @@ static int ids_command(int argc, char** argv) {
 /* ==== compose command ==== */
 
 typedef struct {
-    char* path;
-    char* version;
+    char* path;         /* Model path */
+    char* version;      /* Version (legacy, unused in v1) */
+    char* vocab_path;   /* Vocabulary TSV path (v1 aligned) */
+    char* id;           /* Layer ID (v1 aligned) */
+    float weight;       /* Layer weight */
+    float bias;         /* Layer bias */
 } layer_spec_t;
 
 typedef struct {
@@ -1826,6 +1831,8 @@ static void layer_list_free(layer_list_t* list) {
     for (size_t i = 0; i < list->size; ++i) {
         free(list->data[i].path);
         free(list->data[i].version);
+        free(list->data[i].vocab_path);
+        free(list->data[i].id);
     }
     free(list->data);
     list->data = NULL;
@@ -1842,6 +1849,10 @@ static int layer_list_append(layer_list_t* list, const char* path, const char* v
     }
     list->data[list->size].path = strdup(path);
     list->data[list->size].version = version ? strdup(version) : NULL;
+    list->data[list->size].vocab_path = NULL;
+    list->data[list->size].id = NULL;
+    list->data[list->size].weight = 1.0f;
+    list->data[list->size].bias = 0.0f;
     if (!list->data[list->size].path || (version && !list->data[list->size].version)) {
         free(list->data[list->size].path);
         free(list->data[list->size].version);
@@ -1851,8 +1862,39 @@ static int layer_list_append(layer_list_t* list, const char* path, const char* v
     return 0;
 }
 
+/* Add a layer with full v1 parameters */
+static int layer_list_add_v1(layer_list_t* list, const char* path, const char* vocab_path,
+                               const char* id, float weight, float bias) {
+    if (list->size == list->capacity) {
+        size_t new_cap = list->capacity ? list->capacity * 2 : 4;
+        layer_spec_t* new_data = realloc(list->data, new_cap * sizeof(layer_spec_t));
+        if (!new_data) return -1;
+        list->data = new_data;
+        list->capacity = new_cap;
+    }
+    list->data[list->size].path = strdup(path);
+    list->data[list->size].version = NULL;
+    list->data[list->size].vocab_path = vocab_path ? strdup(vocab_path) : NULL;
+    list->data[list->size].id = id ? strdup(id) : NULL;
+    list->data[list->size].weight = weight;
+    list->data[list->size].bias = bias;
+
+    if (!list->data[list->size].path) {
+        return -1;
+    }
+    list->size++;
+    return 0;
+}
+
 static void compose_usage(void) {
-    printf("Usage: psam compose --out composite.psamc --layer base.psam [--layer overlay.psam] [--created-by text]\n");
+    printf("Usage: psam compose --out composite.psamc --layer base.psam [--layer overlay.psam] [--created-by text] [--align]\n");
+    printf("Options:\n");
+    printf("  --out <path>            Output .psamc file path\n");
+    printf("  --layer <path>          Layer model (first is base, subsequent are overlays)\n");
+    printf("  --created-by <text>     Creator identification string\n");
+    printf("  --align                 Create aligned composite with automatic vocabulary alignment\n");
+    printf("  --sampler.top_k <n>     Default top-k value\n");
+    printf("  --sampler.temperature <f> Default temperature value\n");
 }
 
 static char* derive_layer_id(const char* path, size_t index) {
@@ -1883,6 +1925,7 @@ static int compose_command(int argc, char** argv) {
     const char* created_by = NULL;
     layer_list_t layers = {0};
     psamc_hyperparams_t hyper = PSAMC_PRESET_BALANCED_CONFIG;
+    bool use_alignment = false;
 
     for (int i = 2; i < argc; ++i) {
         const char* arg = argv[i];
@@ -1903,6 +1946,8 @@ static int compose_command(int argc, char** argv) {
         } else if (strcmp(arg, "--created-by") == 0) {
             if (++i >= argc) { compose_usage(); layer_list_free(&layers); return EXIT_BAD_ARGS; }
             created_by = argv[i];
+        } else if (strcmp(arg, "--align") == 0) {
+            use_alignment = true;
         } else if (strcmp(arg, "--sampler.top_k") == 0) {
             if (++i >= argc || parse_uint32(argv[i], &hyper.top_k) != 0) {
                 compose_usage();
@@ -1934,6 +1979,17 @@ static int compose_command(int argc, char** argv) {
         return EXIT_BAD_ARGS;
     }
 
+    if (use_alignment) {
+        /* Aligned composite path: load models, build alignment, save to .psamc with alignment metadata */
+        print_error("--align flag is not yet fully implemented for persistent storage");
+        fprintf(stderr, "INFO: Aligned composites work in-memory via the API.\n");
+        fprintf(stderr, "INFO: See test_aligned_composite.c for usage examples.\n");
+        fprintf(stderr, "INFO: Persistent .psamc storage for aligned composites coming soon.\n");
+        layer_list_free(&layers);
+        return EXIT_INTERNAL;
+    }
+
+    /* Standard composite path (same-vocabulary models) */
     const char* base_path = layers.data[0].path;
     size_t overlay_count = layers.size > 1 ? layers.size - 1 : 0;
     psam_composite_layer_file_t* overlay_descs = NULL;

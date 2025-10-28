@@ -36,6 +36,7 @@
 #include <stddef.h>
 
 #include "psam_export.h"
+#include "psam_vocab_alignment.h"  /* For psam_unknown_policy_t */
 
 #ifndef PSAM_LAYER_ID_MAX
 #define PSAM_LAYER_ID_MAX 64
@@ -80,6 +81,13 @@ extern "C" {
 #define PSAMC_SOURCE_LABEL_MAX   64
 #define PSAMC_SOURCE_URI_MAX     256
 #define PSAMC_SOURCE_LICENSE_MAX 128
+
+/* Coverage weighting rules (v1 aligned composites) */
+typedef enum {
+    PSAM_COVER_NONE = 0,      /* No coverage weighting */
+    PSAM_COVER_LINEAR = 1,    /* Linear coverage: f(c) = c */
+    PSAM_COVER_SQRT = 2       /* Sqrt coverage: f(c) = sqrt(c) */
+} psam_coverage_rule_t;
 
 /* Section types */
 typedef enum {
@@ -257,6 +265,37 @@ static inline psam_composite_layer_file_t psam_composite_layer_file(
     return desc;
 }
 
+/* ========== V1 Aligned Composite Structures ========== */
+
+/* Alignment info (loaded once with composite) */
+typedef struct {
+    uint32_t unified_vocab_size;   /* Size of unified vocabulary */
+    uint32_t unified_unk;          /* Index of UNK token in unified vocab */
+    char unified_vocab_path[PSAMC_MAX_URL_LENGTH]; /* Path to unified vocab TSV */
+    sha256_hash_t unified_vocab_hash; /* SHA-256 of vocab file */
+    uint64_t unified_vocab_size_bytes; /* File size for verification */
+} psam_alignment_info_t;
+
+/* Per-layer vocabulary mapping */
+typedef struct {
+    char layer_id[PSAM_LAYER_ID_MAX]; /* Layer identifier */
+    uint32_t local_vocab_size;     /* Size of layer's local vocabulary */
+    uint32_t local_unk;            /* Index of UNK in local vocab (if policy=UNK) */
+
+    /* Local-to-unified dense map */
+    const uint32_t* l2u;           /* Dense array [local_vocab_size] */
+    char l2u_path[PSAMC_MAX_URL_LENGTH]; /* Path to l2u.bin file */
+    sha256_hash_t l2u_hash;        /* SHA-256 of l2u file */
+    uint64_t l2u_size_bytes;       /* File size */
+
+    /* Unified-to-local sparse map */
+    const uint32_t* u2l_pairs;     /* Pairs [unified_id, local_id] sorted by unified_id */
+    uint32_t u2l_pairs_count;      /* Number of pairs */
+    char u2l_path[PSAMC_MAX_URL_LENGTH]; /* Path to u2l.bin file */
+    sha256_hash_t u2l_hash;        /* SHA-256 of u2l file */
+    uint64_t u2l_size_bytes;       /* File size */
+} psam_layer_map_t;
+
 /* Preset configurations */
 static const psamc_hyperparams_t PSAMC_PRESET_FAST_CONFIG = {
     .preset = PSAMC_PRESET_FAST,
@@ -353,6 +392,50 @@ PSAM_API int psamc_sha256_file(const char* path, sha256_hash_t* out_hash);
  * Get hyperparameters for a preset
  */
 PSAM_API const psamc_hyperparams_t* psamc_get_preset(psamc_preset_t preset);
+
+/* ========== V1 Aligned Composite API (MVP) ========== */
+
+/**
+ * Save aligned composite to .psamc v1 JSON format (MVP - no checksums/headers)
+ *
+ * @param psamc_path Output .psamc JSON file path
+ * @param created_by Creator identification string
+ * @param unified_vocab_path Path to unified vocabulary TSV file
+ * @param unknown_policy How to handle unknown tokens (UNK or SKIP)
+ * @param coverage_rule Coverage weighting rule (NONE, LINEAR, SQRT)
+ * @param sampler Sampler defaults (or NULL for defaults)
+ * @param layer_count Number of layers
+ * @param layer_ids Array of layer IDs
+ * @param layer_model_paths Array of .psam model file paths
+ * @param layer_weights Array of layer weights
+ * @param layer_biases Array of layer bias offsets
+ * @param layer_local_vocab_sizes Array of local vocabulary sizes
+ * @param layer_l2u_maps Array of l2u dense maps [local_vocab_size]
+ * @param layer_u2l_pairs Array of u2l sparse pair arrays
+ * @param layer_u2l_pair_counts Array of u2l pair counts
+ * @param layer_l2u_paths Array of output paths for l2u.u32 files
+ * @param layer_u2l_paths Array of output paths for u2l.pairs files
+ * @return 0 on success, -1 on error
+ */
+PSAM_API int psam_composite_save_v1(
+    const char* psamc_path,
+    const char* created_by,
+    const char* unified_vocab_path,
+    psam_unknown_policy_t unknown_policy,
+    psam_coverage_rule_t coverage_rule,
+    const psamc_sampler_defaults_t* sampler,
+    size_t layer_count,
+    const char** layer_ids,
+    const char** layer_model_paths,
+    const float* layer_weights,
+    const float* layer_biases,
+    const uint32_t* layer_local_vocab_sizes,
+    const uint32_t** layer_l2u_maps,
+    const uint32_t** layer_u2l_pairs,
+    const uint32_t* layer_u2l_pair_counts,
+    const char** layer_l2u_paths,
+    const char** layer_u2l_paths
+);
 
 #ifdef __cplusplus
 }
