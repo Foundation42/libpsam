@@ -2093,15 +2093,177 @@ static int compose_command(int argc, char** argv) {
         /* V1 Aligned Composite Path */
         printf("Creating v1 aligned composite with %zu layers...\n", layers.size);
 
-        /* TODO: Implement full v1 save logic here:
-         * 1. Build/load unified vocab
-         * 2. Call psam_build_vocab_alignment_from_files()
-         * 3. Extract l2u/u2l maps
-         * 4. Call psam_composite_save_v1()
-         * 5. Print summary
-         */
-        print_error("V1 aligned composite save not yet fully wired (TODO)");
-        goto cleanup_error;
+        /* 1. Determine unified vocab path */
+        char unified_tsv_buf[512];
+        const char* unified_tsv = unified_vocab_path;
+        if (!unified_tsv) {
+            /* Auto-generate unified vocab path */
+            ensure_dir("vocabs");
+            snprintf(unified_tsv_buf, sizeof(unified_tsv_buf), "vocabs/unified.tsv");
+            unified_tsv = unified_tsv_buf;
+
+            /* TODO: Build unified vocab from layer vocabs if not exists */
+            /* For now, require user to provide --unified-vocab */
+            print_error("Auto-building unified vocab not yet implemented");
+            fprintf(stderr, "Please provide --unified-vocab for now\n");
+            goto cleanup_error;
+        }
+
+        /* 2. Build vocabulary alignment */
+        printf("Building vocabulary alignment from %zu layer vocabularies...\n", layers.size);
+
+        const char** vocab_paths = malloc(layers.size * sizeof(char*));
+        if (!vocab_paths) goto cleanup_error;
+        for (size_t i = 0; i < layers.size; ++i) {
+            vocab_paths[i] = layers.data[i].vocab_path;
+        }
+
+        uint32_t unified_size = 0;
+        psam_vocab_alignment_t* alignment = psam_build_vocab_alignment_from_files(
+            vocab_paths, layers.size, NULL, &unified_size);
+        free(vocab_paths);
+
+        if (!alignment) {
+            print_error("Failed to build vocabulary alignment");
+            goto cleanup_error;
+        }
+
+        printf("  Unified vocabulary: %u tokens\n", unified_size);
+
+        /* 3. Prepare arrays for psam_composite_save_v1 */
+        ensure_dir("maps");
+
+        const char** layer_ids = malloc(layers.size * sizeof(char*));
+        const char** layer_paths = malloc(layers.size * sizeof(char*));
+        float* weights = malloc(layers.size * sizeof(float));
+        float* biases = malloc(layers.size * sizeof(float));
+        uint32_t* local_vocab_sizes = malloc(layers.size * sizeof(uint32_t));
+        const uint32_t** l2u_maps = malloc(layers.size * sizeof(uint32_t*));
+        const uint32_t** u2l_pairs = malloc(layers.size * sizeof(uint32_t*));
+        uint32_t* u2l_pair_counts = malloc(layers.size * sizeof(uint32_t));
+        char** l2u_paths = malloc(layers.size * sizeof(char*));
+        char** u2l_paths = malloc(layers.size * sizeof(char*));
+
+        if (!layer_ids || !layer_paths || !weights || !biases || !local_vocab_sizes ||
+            !l2u_maps || !u2l_pairs || !u2l_pair_counts || !l2u_paths || !u2l_paths) {
+            psam_vocab_alignment_destroy(alignment);
+            free(layer_ids); free(layer_paths); free(weights); free(biases);
+            free(local_vocab_sizes); free(l2u_maps); free(u2l_pairs);
+            free(u2l_pair_counts); free(l2u_paths); free(u2l_paths);
+            goto cleanup_error;
+        }
+
+        /* Extract maps and prepare paths */
+        for (size_t i = 0; i < layers.size; ++i) {
+            layer_ids[i] = layers.data[i].id;
+            layer_paths[i] = layers.data[i].path;
+            weights[i] = layers.data[i].weight;
+            biases[i] = layers.data[i].bias;
+
+            /* Get alignment data for this layer */
+            psam_vocab_remap_t* remap = &alignment->layer_remaps[i];
+
+            local_vocab_sizes[i] = remap->local_vocab_size;
+            l2u_maps[i] = remap->local_to_unified;
+
+            /* Convert sparse entries to pairs for binary format */
+            u2l_pair_counts[i] = remap->unified_to_local_count;
+            uint32_t* pairs = malloc(remap->unified_to_local_count * 2 * sizeof(uint32_t));
+            if (!pairs) {
+                psam_vocab_alignment_destroy(alignment);
+                for (size_t j = 0; j < i; ++j) {
+                    free(l2u_paths[j]);
+                    free(u2l_paths[j]);
+                    free((void*)u2l_pairs[j]);
+                }
+                free(layer_ids); free(layer_paths); free(weights); free(biases);
+                free(local_vocab_sizes); free(l2u_maps); free(u2l_pairs);
+                free(u2l_pair_counts); free(l2u_paths); free(u2l_paths);
+                goto cleanup_error;
+            }
+            for (uint32_t j = 0; j < remap->unified_to_local_count; ++j) {
+                pairs[j * 2 + 0] = remap->unified_to_local_sparse[j].unified_id;
+                pairs[j * 2 + 1] = remap->unified_to_local_sparse[j].local_id;
+            }
+            u2l_pairs[i] = pairs;
+
+            /* Generate map file paths */
+            l2u_paths[i] = malloc(512);
+            u2l_paths[i] = malloc(512);
+            snprintf(l2u_paths[i], 512, "maps/%s.l2u.u32", layer_ids[i]);
+            snprintf(u2l_paths[i], 512, "maps/%s.u2l.pairs", layer_ids[i]);
+
+            printf("  Layer %zu (%s): local_vocab=%u, coverage=%.1f%%\n",
+                   i, layer_ids[i], local_vocab_sizes[i],
+                   psam_vocab_alignment_get_coverage(alignment, i) * 100.0f);
+        }
+
+        /* 4. Parse policy and coverage enums */
+        psam_unknown_policy_t policy = PSAM_UNKNOWN_MAP_UNK;
+        if (strcmp(unknown_policy_str, "skip") == 0) {
+            policy = PSAM_UNKNOWN_SKIP;
+        }
+
+        psam_coverage_rule_t coverage = PSAM_COVER_NONE;
+        if (strcmp(coverage_weight_str, "linear") == 0) {
+            coverage = PSAM_COVER_LINEAR;
+        } else if (strcmp(coverage_weight_str, "sqrt") == 0) {
+            coverage = PSAM_COVER_SQRT;
+        }
+
+        /* 5. Save v1 composite */
+        printf("Saving aligned composite to %s...\n", out_path);
+
+        int rc = psam_composite_save_v1(
+            out_path,
+            created_by ? created_by : "libpsam-cli",
+            unified_tsv,
+            policy,
+            coverage,
+            sampler_save ? &sampler : NULL,
+            layers.size,
+            layer_ids,
+            layer_paths,
+            weights,
+            biases,
+            local_vocab_sizes,
+            l2u_maps,
+            u2l_pairs,
+            u2l_pair_counts,
+            (const char**)l2u_paths,
+            (const char**)u2l_paths
+        );
+
+        /* Cleanup */
+        for (size_t i = 0; i < layers.size; ++i) {
+            free(l2u_paths[i]);
+            free(u2l_paths[i]);
+            free((void*)u2l_pairs[i]);  /* Free converted pairs */
+        }
+        psam_vocab_alignment_destroy(alignment);
+        free(layer_ids); free(layer_paths); free(weights); free(biases);
+        free(local_vocab_sizes); free(l2u_maps); free(u2l_pairs);
+        free(u2l_pair_counts); free(l2u_paths); free(u2l_paths);
+
+        if (rc != 0) {
+            print_error("Failed to save aligned composite");
+            goto cleanup_error;
+        }
+
+        /* 6. Print success summary */
+        printf("\n✅ Saved aligned composite: %s\n", out_path);
+        printf("   • Unified vocab:  %s (%u tokens)\n", unified_tsv, unified_size);
+        printf("   • Unknown policy: %s\n", unknown_policy_str);
+        printf("   • Coverage rule:  %s\n", coverage_weight_str);
+        printf("   • Layers:         %zu\n", layers.size);
+        for (size_t i = 0; i < layers.size; ++i) {
+            printf("     - %s (weight=%.3f, bias=%.3f)\n",
+                   layers.data[i].id, layers.data[i].weight, layers.data[i].bias);
+            printf("       model: %s\n", layers.data[i].path);
+            printf("       vocab: %s\n", layers.data[i].vocab_path);
+        }
+        printf("\nTry:\n  psam predict --composite %s --prompt \"test\" --top_k 10\n", out_path);
+        goto cleanup_ok;
     }
 
     /* Legacy path: same-vocabulary composites */
