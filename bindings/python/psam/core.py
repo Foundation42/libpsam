@@ -187,10 +187,22 @@ def _load_library():
 
     # Build directory (for development)
     repo_root = pkg_dir.parent.parent.parent
+    build_root = repo_root / "build"
+    core_build = build_root / "core"
+
+    # Common build outputs
     search_paths.extend([
-        repo_root / "build" / "libpsam.so",
-        repo_root / "build" / "libpsam.dylib",
-        repo_root / "build" / "Release" / "libpsam.dll",
+        core_build / "Release" / "libpsam.so",
+        core_build / "Release" / "libpsam.so.0",
+        core_build / "Release" / "libpsam.so.0.1.0",
+        core_build / "Release" / "libpsam.dylib",
+        core_build / "Release" / "libpsam.dll",
+        build_root / "libpsam.so",
+        build_root / "libpsam.dylib",
+        core_build / "libpsam.so",
+        core_build / "libpsam.dylib",
+        core_build / "libpsam.dll",
+        build_root / "Release" / "libpsam.dll",
     ])
 
     # System paths

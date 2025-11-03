@@ -4,6 +4,9 @@
  * Supports both Bun (bun:ffi) and Node.js (via dynamic detection)
  */
 
+import { existsSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import type {
   TokenId,
   InferenceResult,
@@ -157,6 +160,9 @@ function checkError(code: number, operation: string, lib: any): void {
 
 /* ============================ Library Loading ============================ */
 
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(moduleDir, '../../..');
+
 const PREDICTION_SIZE = 12; // sizeof(psam_prediction_t)
 const STATS_SIZE = 32; // sizeof(psam_stats_t)
 const EXPLAIN_TERM_SIZE = 24; // sizeof(psam_explain_term_t)
@@ -167,21 +173,66 @@ const SAMPLER_SIZE = 24; // sizeof(psam_sampler_t): 4 (transform) + 4 (temp) + 4
 const is64Bit = process.arch === 'x64' || process.arch === 'arm64';
 const SIZE_OF_LAYER_FILE_STRUCT = is64Bit ? 24 : 12;
 const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
 
 let cachedLib: any = null;
+
+function resolveLibraryPath(preferred?: string): string {
+  const candidates: string[] = [];
+
+  const pushCandidate = (candidate?: string) => {
+    if (!candidate) return;
+    const resolved = path.resolve(candidate);
+    if (!candidates.includes(resolved)) {
+      candidates.push(resolved);
+    }
+  };
+
+  pushCandidate(preferred);
+  pushCandidate(process.env.LIBPSAM_PATH);
+
+  const repoCandidates = [
+    path.join(repoRoot, 'build', 'core', 'Release', 'libpsam.so'),
+    path.join(repoRoot, 'build', 'core', 'Release', 'libpsam.so.0'),
+    path.join(repoRoot, 'build', 'core', 'Release', 'libpsam.so.0.1.0'),
+    path.join(repoRoot, 'build', 'core', 'libpsam.so'),
+    path.join(repoRoot, 'build', 'libpsam.so'),
+  ];
+
+  for (const candidate of repoCandidates) {
+    pushCandidate(candidate);
+  }
+
+  pushCandidate('./libpsam.so');
+  pushCandidate('./Release/libpsam.so');
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return candidates[0] ?? path.resolve('./libpsam.so');
+}
+
+function toCString(input: string): Uint8Array {
+  const encoded = textEncoder.encode(input);
+  const buffer = new Uint8Array(encoded.length + 1);
+  buffer.set(encoded, 0);
+  buffer[encoded.length] = 0;
+  return buffer;
+}
 
 function loadLibrary(libraryPath?: string): any {
   if (cachedLib) return cachedLib;
 
-  const path = libraryPath ||
-    process.env.LIBPSAM_PATH ||
-    './libpsam.so'; // Default path
+  const resolvedPath = resolveLibraryPath(libraryPath);
 
   if (isBun && FFI) {
     // Bun FFI
     const { dlopen, FFIType } = FFI;
 
-    cachedLib = dlopen(path, {
+    cachedLib = dlopen(resolvedPath, {
       psam_create: { args: [FFIType.u32, FFIType.u32, FFIType.u32], returns: FFIType.ptr },
       psam_destroy: { args: [FFIType.ptr], returns: FFIType.void },
       psam_train_token: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.i32 },
@@ -240,7 +291,7 @@ function loadLibrary(libraryPath?: string): any {
   } else if (FFI) {
     // Node.js ffi-napi
     const ffi = FFI;
-    cachedLib = ffi.Library(path, {
+    cachedLib = ffi.Library(resolvedPath, {
       psam_create: ['pointer', ['uint32', 'uint32', 'uint32']],
       psam_destroy: ['void', ['pointer']],
       psam_train_token: ['int32', ['pointer', 'uint32']],
@@ -619,22 +670,26 @@ export class LayeredCompositeNative implements LayeredComposite {
       throw new Error('Layered composites currently require PSAMNative overlays');
     }
     const nativeHandle = (overlay as PSAMNative).getNativeHandle();
-    const result = this.symbols.psam_composite_add_layer(this.handle, layerId, nativeHandle, weight);
+    const idArg = isBun ? toCString(layerId) : layerId;
+    const result = this.symbols.psam_composite_add_layer(this.handle, idArg, nativeHandle, weight);
     checkError(result, 'composite_add_layer', this.lib);
   }
 
   removeLayer(layerId: string): void {
-    const result = this.symbols.psam_composite_remove_layer(this.handle, layerId);
+    const idArg = isBun ? toCString(layerId) : layerId;
+    const result = this.symbols.psam_composite_remove_layer(this.handle, idArg);
     checkError(result, 'composite_remove_layer', this.lib);
   }
 
   updateLayerWeight(layerId: string, newWeight: number): void {
-    const result = this.symbols.psam_composite_update_layer_weight(this.handle, layerId, newWeight);
+    const idArg = isBun ? toCString(layerId) : layerId;
+    const result = this.symbols.psam_composite_update_layer_weight(this.handle, idArg, newWeight);
     checkError(result, 'composite_update_layer_weight', this.lib);
   }
 
   updateLayerBias(layerId: string, newBias: number): void {
-    const result = this.symbols.psam_composite_update_layer_bias(this.handle, layerId, newBias);
+    const idArg = isBun ? toCString(layerId) : layerId;
+    const result = this.symbols.psam_composite_update_layer_bias(this.handle, idArg, newBias);
     checkError(result, 'composite_update_layer_bias', this.lib);
   }
 

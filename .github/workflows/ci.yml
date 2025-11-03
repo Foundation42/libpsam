@@ -55,3 +55,51 @@ jobs:
         run: |
           cd demo
           npm run build
+
+  bindings-tests:
+    name: Bindings Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 'latest'
+
+      - name: Configure
+        run: |
+          mkdir build
+          cd build
+          cmake -DCMAKE_BUILD_TYPE=Release ..
+
+      - name: Build
+        run: |
+          cd build
+          cmake --build . --config Release
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest
+          python -m pip install ./bindings/python
+
+      - name: Install JS dependencies
+        run: |
+          bun install --cwd bindings/javascript
+
+      - name: Run Python binding tests
+        run: |
+          pytest testing/python
+
+      - name: Run Bun binding tests
+        run: |
+          bun test testing/bun/composition.test.ts
