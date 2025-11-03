@@ -576,6 +576,7 @@ psam_composite_aligned_t* psam_create_composite_aligned(
     aligned->layer_capacity = 0;
     aligned->owns_composite = true;
     aligned->owns_alignment = owns_alignment;
+    aligned->unified_vocab_path = NULL;
 
     fprintf(stderr, "INFO: Created aligned composite with %u-token unified vocabulary\n",
             alignment->unified_vocab_size);
@@ -850,6 +851,24 @@ int psam_composite_aligned_predict_with_sampler(
     return count;
 }
 
+const psam_vocab_alignment_t* psam_composite_aligned_get_alignment(
+    const psam_composite_aligned_t* composite
+) {
+    if (!composite) {
+        return NULL;
+    }
+    return composite->alignment;
+}
+
+const char* psam_composite_aligned_get_unified_vocab_path(
+    const psam_composite_aligned_t* composite
+) {
+    if (!composite) {
+        return NULL;
+    }
+    return composite->unified_vocab_path;
+}
+
 void psam_composite_aligned_destroy(psam_composite_aligned_t* composite) {
     if (!composite) return;
 
@@ -871,6 +890,7 @@ void psam_composite_aligned_destroy(psam_composite_aligned_t* composite) {
         }
         free(composite->layers);
     }
+    free(composite->unified_vocab_path);
     free(composite);
 }
 

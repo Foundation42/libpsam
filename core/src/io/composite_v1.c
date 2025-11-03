@@ -775,10 +775,16 @@ psam_composite_aligned_t* psam_composite_load_aligned(
 
     char* unified_path = resolve_reference_path(psamc_path, spec->alignment.unified_vocab_path);
     const char* vocab_path = unified_path ? unified_path : spec->alignment.unified_vocab_path;
+    const char* used_vocab_path = NULL;
     if (alignment->unified_vocab_size > 0) {
         alignment->unified_tokens = load_unified_vocab_tokens(vocab_path, alignment->unified_vocab_size);
-        if (!alignment->unified_tokens && unified_path) {
+        if (alignment->unified_tokens) {
+            used_vocab_path = vocab_path;
+        } else if (unified_path) {
             alignment->unified_tokens = load_unified_vocab_tokens(spec->alignment.unified_vocab_path, alignment->unified_vocab_size);
+            if (alignment->unified_tokens) {
+                used_vocab_path = spec->alignment.unified_vocab_path;
+            }
         }
         if (!alignment->unified_tokens) {
             if (unified_path) {
@@ -800,6 +806,10 @@ psam_composite_aligned_t* psam_composite_load_aligned(
         alignment->owns_unified_tokens = false;
         alignment->unified_tokens = NULL;
     }
+    char* stored_vocab_path = NULL;
+    if (alignment->unified_tokens && used_vocab_path) {
+        stored_vocab_path = strdup(used_vocab_path);
+    }
     free(unified_path);
 
     bool load_ok = true;
@@ -813,6 +823,7 @@ psam_composite_aligned_t* psam_composite_load_aligned(
     }
 
     if (!load_ok) {
+        free(stored_vocab_path);
         psam_vocab_alignment_destroy(alignment);
         psamc_free(spec);
         return NULL;
@@ -825,6 +836,7 @@ psam_composite_aligned_t* psam_composite_load_aligned(
 
     psam_model_t* base_model = load_model_from_ref(psamc_path, &spec->manifest.refs[base_index]);
     if (!base_model) {
+        free(stored_vocab_path);
         psam_vocab_alignment_destroy(alignment);
         psamc_free(spec);
         return NULL;
@@ -838,11 +850,13 @@ psam_composite_aligned_t* psam_composite_load_aligned(
     );
 
     if (!composite) {
+        free(stored_vocab_path);
         psam_destroy(base_model);
         psam_vocab_alignment_destroy(alignment);
         psamc_free(spec);
         return NULL;
     }
+    composite->unified_vocab_path = stored_vocab_path;
 
     psam_composite_aligned_set_unknown_policy(composite, spec->alignment.unknown_policy);
     psam_composite_aligned_set_coverage_rule(composite, spec->alignment.coverage_rule);

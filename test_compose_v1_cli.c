@@ -142,8 +142,8 @@ int main(void) {
 
     printf("  ✓ inspect reports psamc metadata\n");
 
-    printf("\nRunning predict with composite...\n");
-    rc = run_command("./build/psam predict --model test_output/tragedies_v1.psamc --ctx-ids 0,1,2 --top_k 5 > /dev/null");
+    printf("\nRunning predict with composite (prompt)...\n");
+    rc = run_command("./build/psam predict --model test_output/tragedies_v1.psamc --prompt \"to be or not to\" --top_k 5 > /dev/null");
     if (rc != 0) {
         fprintf(stderr, "❌ psam predict failed with exit code %d\n", rc);
         return 1;

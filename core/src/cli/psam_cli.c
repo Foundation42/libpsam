@@ -443,6 +443,70 @@ static int vocab_load(const char* path, vocab_t* vocab) {
     return EXIT_OK;
 }
 
+static int vocab_build_from_alignment(const psam_vocab_alignment_t* alignment, vocab_t* vocab) {
+    if (!alignment || !vocab) {
+        return EXIT_BAD_ARGS;
+    }
+    if (alignment->unified_vocab_size == 0 || !alignment->unified_tokens) {
+        return EXIT_BAD_ARGS;
+    }
+
+    memset(vocab, 0, sizeof(*vocab));
+
+    size_t size = alignment->unified_vocab_size;
+    char** id_to_token = calloc(size, sizeof(char*));
+    vocab_entry_t* entries = malloc(size * sizeof(vocab_entry_t));
+    if (!id_to_token || !entries) {
+        free(id_to_token);
+        free(entries);
+        return EXIT_INTERNAL;
+    }
+
+    size_t entry_count = 0;
+    for (uint32_t i = 0; i < alignment->unified_vocab_size; ++i) {
+        const char* token = alignment->unified_tokens[i];
+        if (!token) {
+            continue;
+        }
+        char* id_copy = strdup(token);
+        char* entry_copy = strdup(token);
+        if (!id_copy || !entry_copy) {
+            free(id_copy);
+            free(entry_copy);
+            for (size_t j = 0; j < size; ++j) {
+                free(id_to_token[j]);
+            }
+            free(id_to_token);
+            for (size_t j = 0; j < entry_count; ++j) {
+                free(entries[j].token);
+            }
+            free(entries);
+            return EXIT_INTERNAL;
+        }
+        id_to_token[i] = id_copy;
+        entries[entry_count].id = i;
+        entries[entry_count].token = entry_copy;
+        entry_count++;
+    }
+
+    if (entry_count == 0) {
+        for (size_t j = 0; j < size; ++j) {
+            free(id_to_token[j]);
+        }
+        free(id_to_token);
+        free(entries);
+        return EXIT_BAD_ARGS;
+    }
+
+    qsort(entries, entry_count, sizeof(vocab_entry_t), compare_entry_token);
+
+    vocab->id_to_token = id_to_token;
+    vocab->size = size;
+    vocab->entries = entries;
+    vocab->entry_count = entry_count;
+    return EXIT_OK;
+}
+
 static int vocab_lookup_id(const vocab_t* vocab, const char* token, uint32_t* out_id) {
     vocab_entry_t key;
     key.token = (char*)token;
@@ -1062,70 +1126,86 @@ static int generate_command(int argc, char** argv) {
         generate_usage();
         return EXIT_BAD_ARGS;
     }
-
-    vocab_t vocab = {0};
-    if (opts.context_text && !opts.vocab_path) {
-        print_error("--context requires --vocab");
-        return EXIT_BAD_ARGS;
-    }
-    if (opts.vocab_path) {
-        int rc = vocab_load(opts.vocab_path, &vocab);
-        if (rc != EXIT_OK) {
-            vocab_free(&vocab);
-            return rc;
-        }
-    }
-
-    u32_list_t context = {0};
-    if (opts.ctx_ids) {
-        int rc = parse_ctx_ids(opts.ctx_ids, &context);
-        if (rc != EXIT_OK) {
-            vocab_free(&vocab);
-            return rc;
-        }
-    } else {
-        int rc = tokenize_with_vocab(&vocab, opts.context_text, &context, true);
-        if (rc != EXIT_OK) {
-            vocab_free(&vocab);
-            return rc;
-        }
-    }
-
-    /* Check if composite or regular model */
     bool is_composite = has_suffix(opts.model_path, ".psamc");
+    vocab_t vocab = {0};
+    u32_list_t context = {0};
+    u32_list_t generated = {0};
     psam_model_t* model = NULL;
     cli_composite_handle_t composite_handle = (cli_composite_handle_t){0};
+    psam_prediction_t* preds = NULL;
+    int exit_code = EXIT_OK;
 
     if (is_composite) {
         composite_handle = cli_composite_handle_load(opts.model_path, false);
         if (cli_composite_handle_is_empty(&composite_handle)) {
             print_error("failed to load composite model '%s'", opts.model_path);
-            vocab_free(&vocab);
-            u32_list_free(&context);
-            return EXIT_FILE_MISSING;
+            exit_code = EXIT_FILE_MISSING;
+            goto cleanup;
         }
     } else {
         model = psam_load(opts.model_path);
         if (!model) {
             print_error("failed to load model '%s'", opts.model_path);
-            vocab_free(&vocab);
-            u32_list_free(&context);
-            return EXIT_FILE_MISSING;
+            exit_code = EXIT_FILE_MISSING;
+            goto cleanup;
+        }
+    }
+
+    if (opts.context_text) {
+        int rc = EXIT_OK;
+        if (opts.vocab_path) {
+            rc = vocab_load(opts.vocab_path, &vocab);
+        } else if (cli_composite_handle_is_aligned(&composite_handle)) {
+            const char* inferred_path = psam_composite_aligned_get_unified_vocab_path(composite_handle.aligned);
+            if (inferred_path) {
+                rc = vocab_load(inferred_path, &vocab);
+            }
+            if (!inferred_path || rc != EXIT_OK) {
+                const psam_vocab_alignment_t* alignment = psam_composite_aligned_get_alignment(composite_handle.aligned);
+                rc = alignment ? vocab_build_from_alignment(alignment, &vocab) : EXIT_BAD_ARGS;
+                if (rc == EXIT_BAD_ARGS) {
+                    print_error("composite does not expose unified vocabulary; supply --vocab");
+                }
+            }
+        } else {
+            print_error("--context requires --vocab");
+            exit_code = EXIT_BAD_ARGS;
+            goto cleanup;
+        }
+        if (rc != EXIT_OK) {
+            exit_code = rc;
+            goto cleanup;
+        }
+    } else if (opts.vocab_path) {
+        int rc = vocab_load(opts.vocab_path, &vocab);
+        if (rc != EXIT_OK) {
+            exit_code = rc;
+            goto cleanup;
+        }
+    }
+
+    if (opts.ctx_ids) {
+        int rc = parse_ctx_ids(opts.ctx_ids, &context);
+        if (rc != EXIT_OK) {
+            exit_code = rc;
+            goto cleanup;
+        }
+    } else {
+        int rc = tokenize_with_vocab(&vocab, opts.context_text, &context, true);
+        if (rc != EXIT_OK) {
+            exit_code = rc;
+            goto cleanup;
         }
     }
 
     uint32_t predict_cap = opts.top_k ? opts.top_k : 64;
     if (predict_cap < 8) predict_cap = 8;
-    psam_prediction_t* preds = calloc(predict_cap, sizeof(psam_prediction_t));
+    preds = calloc(predict_cap, sizeof(psam_prediction_t));
     if (!preds) {
-        if (model) psam_destroy(model);
-        cli_composite_handle_destroy(&composite_handle);
-        vocab_free(&vocab);
-        u32_list_free(&context);
-        return EXIT_INTERNAL;
+        exit_code = EXIT_INTERNAL;
+        goto cleanup;
     }
 
-    u32_list_t generated = {0};
     uint64_t rng_state = opts.seed_provided ? (uint64_t)opts.seed : ((uint64_t)time(NULL) ^ 0x9e3779b97f4a7c15ULL);
     if (rng_state == 0) rng_state = 1;
     bool first_output = true;
@@ -1196,10 +1276,6 @@ static int generate_command(int argc, char** argv) {
         }
     }
 
-    free(preds);
-    if (model) psam_destroy(model);
-    cli_composite_handle_destroy(&composite_handle);
-
     if (opts.quiet) {
         printf("\n");
     } else {
@@ -1252,10 +1328,16 @@ static int generate_command(int argc, char** argv) {
         }
     }
 
+    exit_code = EXIT_OK;
+
+cleanup:
+    free(preds);
+    if (model) psam_destroy(model);
+    cli_composite_handle_destroy(&composite_handle);
     u32_list_free(&generated);
     vocab_free(&vocab);
     u32_list_free(&context);
-    return EXIT_OK;
+    return exit_code;
 }
 
 static int predict_command(int argc, char** argv) {
@@ -1327,74 +1409,88 @@ static int predict_command(int argc, char** argv) {
         return EXIT_BAD_ARGS;
     }
 
-    vocab_t vocab = {0};
-    if (opts.context_text && !opts.vocab_path) {
-        print_error("--context requires --vocab");
-        return EXIT_BAD_ARGS;
-    }
-    if (opts.vocab_path) {
-        int rc = vocab_load(opts.vocab_path, &vocab);
-        if (rc != EXIT_OK) {
-            vocab_free(&vocab);
-            return rc;
-        }
-    }
-
-    u32_list_t context = {0};
-    if (opts.ctx_ids) {
-        int rc = parse_ctx_ids(opts.ctx_ids, &context);
-        if (rc != EXIT_OK) {
-            vocab_free(&vocab);
-            return rc;
-        }
-    } else if (opts.context_text) {
-        int rc = tokenize_with_vocab(&vocab, opts.context_text, &context, true);
-        if (rc != EXIT_OK) {
-            vocab_free(&vocab);
-            return rc;
-        }
-    }
-
-    /* Check if composite or regular model */
     bool is_composite = has_suffix(opts.model_path, ".psamc");
+    vocab_t vocab = {0};
+    u32_list_t context = {0};
     psam_model_t* model = NULL;
     cli_composite_handle_t composite_handle = (cli_composite_handle_t){0};
+    psam_prediction_t* preds = NULL;
+    int exit_code = EXIT_OK;
 
     if (is_composite) {
         composite_handle = cli_composite_handle_load(opts.model_path, false);
         if (cli_composite_handle_is_empty(&composite_handle)) {
             print_error("failed to load composite model '%s'", opts.model_path);
-            vocab_free(&vocab);
-            u32_list_free(&context);
-            return EXIT_FILE_MISSING;
+            exit_code = EXIT_FILE_MISSING;
+            goto cleanup;
         }
     } else {
         model = psam_load(opts.model_path);
         if (!model) {
             print_error("failed to load model '%s'", opts.model_path);
-            vocab_free(&vocab);
-            u32_list_free(&context);
-            return EXIT_FILE_MISSING;
+            exit_code = EXIT_FILE_MISSING;
+            goto cleanup;
+        }
+    }
+
+    if (opts.context_text) {
+        int rc = EXIT_OK;
+        if (opts.vocab_path) {
+            rc = vocab_load(opts.vocab_path, &vocab);
+        } else if (cli_composite_handle_is_aligned(&composite_handle)) {
+            const char* inferred_path = psam_composite_aligned_get_unified_vocab_path(composite_handle.aligned);
+            if (inferred_path) {
+                rc = vocab_load(inferred_path, &vocab);
+            }
+            if (!inferred_path || rc != EXIT_OK) {
+                const psam_vocab_alignment_t* alignment = psam_composite_aligned_get_alignment(composite_handle.aligned);
+                rc = alignment ? vocab_build_from_alignment(alignment, &vocab) : EXIT_BAD_ARGS;
+                if (rc == EXIT_BAD_ARGS) {
+                    print_error("composite does not expose unified vocabulary; supply --vocab");
+                }
+            }
+        } else {
+            print_error("--context requires --vocab");
+            exit_code = EXIT_BAD_ARGS;
+            goto cleanup;
+        }
+        if (rc != EXIT_OK) {
+            exit_code = rc;
+            goto cleanup;
+        }
+    } else if (opts.vocab_path) {
+        int rc = vocab_load(opts.vocab_path, &vocab);
+        if (rc != EXIT_OK) {
+            exit_code = rc;
+            goto cleanup;
+        }
+    }
+
+    if (opts.ctx_ids) {
+        int rc = parse_ctx_ids(opts.ctx_ids, &context);
+        if (rc != EXIT_OK) {
+            exit_code = rc;
+            goto cleanup;
+        }
+    } else if (opts.context_text) {
+        int rc = tokenize_with_vocab(&vocab, opts.context_text, &context, true);
+        if (rc != EXIT_OK) {
+            exit_code = rc;
+            goto cleanup;
         }
     }
 
     if (context.size == 0) {
         print_error("empty context");
-        if (model) psam_destroy(model);
-        cli_composite_handle_destroy(&composite_handle);
-        vocab_free(&vocab);
-        u32_list_free(&context);
-        return EXIT_BAD_ARGS;
+        exit_code = EXIT_BAD_ARGS;
+        goto cleanup;
     }
 
     uint32_t predict_count = opts.top_k ? opts.top_k : 16;
-    psam_prediction_t* preds = calloc(predict_count, sizeof(psam_prediction_t));
+    preds = calloc(predict_count, sizeof(psam_prediction_t));
     if (!preds) {
-        if (model) psam_destroy(model);
-        cli_composite_handle_destroy(&composite_handle);
-        vocab_free(&vocab);
-        u32_list_free(&context);
-        return EXIT_INTERNAL;
+        exit_code = EXIT_INTERNAL;
+        goto cleanup;
     }
 
     /* Configure sampler */
@@ -1432,12 +1528,8 @@ static int predict_command(int argc, char** argv) {
     }
     if (num_preds < 0) {
         print_error("predict failed (%d)", num_preds);
-        free(preds);
-        if (model) psam_destroy(model);
-        cli_composite_handle_destroy(&composite_handle);
-        vocab_free(&vocab);
-        u32_list_free(&context);
-        return EXIT_INTERNAL;
+        exit_code = EXIT_INTERNAL;
+        goto cleanup;
     }
 
     if (opts.pretty) {
@@ -1476,13 +1568,15 @@ static int predict_command(int argc, char** argv) {
     } else {
         printf("]}\n");
     }
+    exit_code = EXIT_OK;
 
+cleanup:
     free(preds);
     if (model) psam_destroy(model);
     cli_composite_handle_destroy(&composite_handle);
     vocab_free(&vocab);
     u32_list_free(&context);
-    return EXIT_OK;
+    return exit_code;
 }
 
 /* ==== explain command ==== */

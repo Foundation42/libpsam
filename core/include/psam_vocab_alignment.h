@@ -158,6 +158,7 @@ typedef struct {
     size_t layer_capacity;                  /* Allocated capacity for layers */
     bool owns_composite;                    /* Whether to free composite on destroy */
     bool owns_alignment;                    /* Whether to free alignment on destroy */
+    char* unified_vocab_path;               /* Resolved unified vocab path (optional) */
 } psam_composite_aligned_t;
 
 /**
@@ -250,6 +251,19 @@ PSAM_API int psam_composite_aligned_predict_with_sampler(
     const psam_sampler_t* sampler,
     void* out_preds,  /* psam_prediction_t* */
     size_t max_preds
+);
+
+/**
+ * Retrieve the vocabulary alignment backing an aligned composite.
+ *
+ * @return Pointer to internal alignment table (do not free).
+ */
+PSAM_API const psam_vocab_alignment_t* psam_composite_aligned_get_alignment(
+    const psam_composite_aligned_t* composite
+);
+
+PSAM_API const char* psam_composite_aligned_get_unified_vocab_path(
+    const psam_composite_aligned_t* composite
 );
 
 /**
