@@ -1,5 +1,8 @@
 /**
  * model.c - PSAM model lifecycle and core data structures
+ *
+ * This file implements the primary model creation, destruction, and
+ * configuration logic for the PSAM library.
  */
 
 #define _POSIX_C_SOURCE 200809L
