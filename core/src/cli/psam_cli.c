@@ -25,6 +25,13 @@
 #include <math.h>
 #include <float.h>
 
+/* Windows compatibility for S_ISDIR */
+#ifdef _WIN32
+  #ifndef S_ISDIR
+    #define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+  #endif
+#endif
+
 #define CLI_VERSION "0.1.0"
 
 #define EXIT_OK 0
