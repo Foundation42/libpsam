@@ -6,7 +6,10 @@
 
 import { existsSync } from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+
+// Declare __dirname for CommonJS compatibility
+declare const __dirname: string | undefined;
+
 import type {
   TokenId,
   InferenceResult,
@@ -160,7 +163,12 @@ function checkError(code: number, operation: string, lib: any): void {
 
 /* ============================ Library Loading ============================ */
 
-const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+// Get module directory
+// In CommonJS builds, __dirname will be defined at runtime
+// In ESM builds, we use the resolved path from this fallback
+const moduleDir = typeof __dirname !== 'undefined' && __dirname
+  ? __dirname
+  : path.resolve(path.dirname(''));
 const repoRoot = path.resolve(moduleDir, '../../..');
 
 const PREDICTION_SIZE = 12; // sizeof(psam_prediction_t)
