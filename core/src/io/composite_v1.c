@@ -1,8 +1,8 @@
 /**
- * composite_v1.c - Aligned composite persistence (v1 MVP)
+ * composite_v1.c - Aligned composite persistence (v1)
  *
- * Simple JSON-based format with mandatory vocabulary alignment.
- * No checksums, no headers - just the essential data for save/load/predict.
+ * Binary .psamc writer that persists vocabulary alignment metadata,
+ * SHA-256 digests, and sampler defaults alongside layered topology data.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -20,20 +20,6 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include <time.h>
-
-/* ========== Simple JSON Writer ========== */
-
-static void json_write_string(FILE* f, const char* key, const char* value, bool comma) {
-    fprintf(f, "  \"%s\": \"%s\"%s\n", key, value, comma ? "," : "");
-}
-
-static void json_write_uint(FILE* f, const char* key, uint32_t value, bool comma) {
-    fprintf(f, "  \"%s\": %u%s\n", key, value, comma ? "," : "");
-}
-
-static void json_write_float(FILE* f, const char* key, float value, bool comma) {
-    fprintf(f, "  \"%s\": %.6f%s\n", key, value, comma ? "," : "");
-}
 
 /* ========== Binary Map I/O ========== */
 
@@ -192,75 +178,164 @@ int psam_composite_save_v1(
     const uint32_t** layer_u2l_pairs,
     const uint32_t* layer_u2l_pair_counts,
     const char** layer_l2u_paths,
-    const char** layer_u2l_paths
+    const char** layer_u2l_paths,
+    uint32_t unified_vocab_size
 ) {
-    FILE* f = fopen(psamc_path, "w");
-    if (!f) {
-        fprintf(stderr, "ERROR: Failed to create %s: %s\n", psamc_path, strerror(errno));
+    (void)sampler; /* Sampler persistence will be added in a later revision */
+
+    if (!psamc_path || layer_count == 0 || !layer_ids || !layer_model_paths ||
+        !layer_weights || !layer_biases || !layer_local_vocab_sizes ||
+        !layer_l2u_maps || !layer_u2l_pairs || !layer_u2l_pair_counts ||
+        !layer_l2u_paths || !layer_u2l_paths) {
+        fprintf(stderr, "ERROR: psam_composite_save_v1 received invalid arguments\n");
         return -1;
     }
 
-    /* Write JSON header */
-    fprintf(f, "{\n");
-    json_write_uint(f, "version", 1, true);
-    json_write_string(f, "created_by", created_by ? created_by : "libpsam", true);
-
-    /* Sampler defaults */
-    fprintf(f, "  \"sampler\": {\n");
-    const char* transform_str = "zscore";
-    if (sampler && sampler->logit_transform == PSAM_LOGIT_RAW) transform_str = "raw";
-    else if (sampler && sampler->logit_transform == PSAM_LOGIT_CALIBRATED) transform_str = "calibrated";
-    fprintf(f, "    \"logit_transform\": \"%s\",\n", transform_str);
-    fprintf(f, "    \"temperature\": %.6f,\n", sampler ? sampler->temperature : 1.0f);
-    fprintf(f, "    \"top_k\": %d,\n", sampler ? sampler->top_k : 50);
-    fprintf(f, "    \"top_p\": %.6f,\n", sampler ? sampler->top_p : 0.95f);
-    fprintf(f, "    \"seed\": %lu\n", (unsigned long)(sampler ? sampler->seed : 42));
-    fprintf(f, "  },\n");
-
-    /* Unified vocab */
-    fprintf(f, "  \"unified_vocab\": { \"path\": \"%s\" },\n", unified_vocab_path);
-
-    /* Unknown policy */
-    const char* policy_str = (unknown_policy == PSAM_UNKNOWN_MAP_UNK) ? "unk" : "skip";
-    json_write_string(f, "unknown_policy", policy_str, true);
-
-    /* Coverage weight */
-    const char* coverage_str = "none";
-    if (coverage_rule == PSAM_COVER_LINEAR) coverage_str = "linear";
-    else if (coverage_rule == PSAM_COVER_SQRT) coverage_str = "sqrt";
-    json_write_string(f, "coverage_weight", coverage_str, true);
-
-    /* Layers */
-    fprintf(f, "  \"layers\": [\n");
     for (size_t i = 0; i < layer_count; ++i) {
-        fprintf(f, "    {\n");
-        json_write_string(f, "id", layer_ids[i], true);
-        json_write_string(f, "path", layer_model_paths[i], true);
-        json_write_float(f, "weight", layer_weights[i], true);
-        json_write_float(f, "bias", layer_biases[i], true);
-        json_write_uint(f, "local_vocab_size", layer_local_vocab_sizes[i], true);
-        json_write_string(f, "l2u_path", layer_l2u_paths[i], true);
-        json_write_string(f, "u2l_path", layer_u2l_paths[i], false);
-        fprintf(f, "    }%s\n", (i + 1 < layer_count) ? "," : "");
-
-        /* Write binary map files */
-        if (write_l2u_map(layer_l2u_paths[i], layer_l2u_maps[i], layer_local_vocab_sizes[i]) != 0) {
-            fclose(f);
-            return -1;
-        }
-        if (write_u2l_map(layer_u2l_paths[i], layer_u2l_pairs[i], layer_u2l_pair_counts[i]) != 0) {
-            fclose(f);
+        if (!layer_l2u_maps[i] || !layer_u2l_pairs[i] ||
+            !layer_l2u_paths[i] || !layer_u2l_paths[i]) {
+            fprintf(stderr, "ERROR: Layer %zu missing alignment buffers\n", i);
             return -1;
         }
     }
-    fprintf(f, "  ]\n");
-    fprintf(f, "}\n");
 
-    fclose(f);
-    return 0;
+    /* Emit alignment map binaries */
+    for (size_t i = 0; i < layer_count; ++i) {
+        if (write_l2u_map(layer_l2u_paths[i], layer_l2u_maps[i], layer_local_vocab_sizes[i]) != 0) {
+            return -1;
+        }
+        if (write_u2l_map(layer_u2l_paths[i], layer_u2l_pairs[i], layer_u2l_pair_counts[i]) != 0) {
+            return -1;
+        }
+    }
+
+    int rc = -1;
+    psamc_manifest_t manifest = {0};
+    psamc_topology_t topology = {0};
+    psam_alignment_info_t alignment = {0};
+
+    manifest.num_references = (uint32_t)layer_count;
+    manifest.refs = calloc(layer_count, sizeof(psamc_model_ref_t));
+    if (!manifest.refs) {
+        goto cleanup;
+    }
+
+    for (size_t i = 0; i < layer_count; ++i) {
+        const char* model_path = layer_model_paths[i];
+        struct stat st = {0};
+        if (stat(model_path, &st) != 0) {
+            fprintf(stderr, "ERROR: Failed to stat model '%s': %s\n", model_path, strerror(errno));
+            goto cleanup;
+        }
+
+        psamc_model_ref_t* ref = &manifest.refs[i];
+        snprintf(ref->url, PSAMC_MAX_URL_LENGTH, "%s", model_path);
+        ref->size = (uint64_t)st.st_size;
+        if (psamc_sha256_file(model_path, &ref->sha256) != 0) {
+            fprintf(stderr, "ERROR: Failed to hash model '%s'\n", model_path);
+            goto cleanup;
+        }
+        if (layer_ids[i]) {
+            snprintf(ref->model_id, PSAMC_MAX_MODEL_ID, "%s", layer_ids[i]);
+        }
+    }
+
+    manifest.created_timestamp = (uint64_t)time(NULL);
+    snprintf(manifest.created_by, PSAMC_CREATED_BY_MAX, "%s", created_by && created_by[0] ? created_by : "libpsam");
+
+    topology.base_weight = layer_weights[0];
+    topology.base_ref_index = 0;
+    if (layer_count > 1) {
+        topology.layer_count = (uint32_t)(layer_count - 1);
+        topology.layers = calloc(topology.layer_count, sizeof(psamc_layer_entry_t));
+        if (!topology.layers) {
+            goto cleanup;
+        }
+        for (uint32_t i = 0; i < topology.layer_count; ++i) {
+            const char* id = layer_ids[i + 1];
+            psamc_layer_entry_t* entry = &topology.layers[i];
+            if (id) {
+                snprintf(entry->layer_id, PSAM_LAYER_ID_MAX, "%s", id);
+            }
+            entry->weight = layer_weights[i + 1];
+            entry->bias = layer_biases[i + 1];
+            entry->ref_index = i + 1;
+        }
+    }
+
+    alignment.unified_vocab_size = unified_vocab_size;
+    alignment.unified_unk = unified_vocab_size ? unified_vocab_size - 1 : 0;
+    alignment.unknown_policy = unknown_policy;
+    alignment.coverage_rule = coverage_rule;
+    alignment.layer_count = (uint32_t)layer_count;
+    alignment.layers = calloc(layer_count, sizeof(psam_layer_map_t));
+    if (!alignment.layers) {
+        goto cleanup;
+    }
+
+    if (unified_vocab_path && unified_vocab_path[0] != '\0') {
+        struct stat vocab_st = {0};
+        if (stat(unified_vocab_path, &vocab_st) == 0) {
+            alignment.unified_vocab_size_bytes = (uint64_t)vocab_st.st_size;
+        }
+        snprintf(alignment.unified_vocab_path, PSAMC_MAX_URL_LENGTH, "%s", unified_vocab_path);
+        if (psamc_sha256_file(unified_vocab_path, &alignment.unified_vocab_hash) != 0) {
+            fprintf(stderr, "ERROR: Failed to hash unified vocab '%s'\n", unified_vocab_path);
+            goto cleanup;
+        }
+    }
+
+    for (size_t i = 0; i < layer_count; ++i) {
+        psam_layer_map_t* map = &alignment.layers[i];
+        if (layer_ids[i]) {
+            snprintf(map->layer_id, PSAM_LAYER_ID_MAX, "%s", layer_ids[i]);
+        }
+        map->local_vocab_size = layer_local_vocab_sizes[i];
+        map->local_unk = layer_local_vocab_sizes[i] ? layer_local_vocab_sizes[i] - 1 : 0;
+        map->u2l_pairs_count = layer_u2l_pair_counts[i];
+        map->coverage = (unified_vocab_size > 0)
+            ? (float)layer_u2l_pair_counts[i] / (float)unified_vocab_size
+            : 0.0f;
+
+        snprintf(map->l2u_path, PSAMC_MAX_URL_LENGTH, "%s", layer_l2u_paths[i]);
+        snprintf(map->u2l_path, PSAMC_MAX_URL_LENGTH, "%s", layer_u2l_paths[i]);
+
+        struct stat map_stat = {0};
+        if (stat(layer_l2u_paths[i], &map_stat) == 0) {
+            map->l2u_size_bytes = (uint64_t)map_stat.st_size;
+        }
+        if (psamc_sha256_file(layer_l2u_paths[i], &map->l2u_hash) != 0) {
+            fprintf(stderr, "ERROR: Failed to hash map '%s'\n", layer_l2u_paths[i]);
+            goto cleanup;
+        }
+
+        if (stat(layer_u2l_paths[i], &map_stat) == 0) {
+            map->u2l_size_bytes = (uint64_t)map_stat.st_size;
+        }
+        if (psamc_sha256_file(layer_u2l_paths[i], &map->u2l_hash) != 0) {
+            fprintf(stderr, "ERROR: Failed to hash map '%s'\n", layer_u2l_paths[i]);
+            goto cleanup;
+        }
+    }
+
+    psamc_hyperparams_t hyperparams = PSAMC_PRESET_BALANCED_CONFIG;
+
+    if (psamc_save(psamc_path, NULL, &hyperparams, &manifest, &topology, &alignment) != 0) {
+        goto cleanup;
+    }
+
+    rc = 0;
+
+cleanup:
+    free(manifest.refs);
+    manifest.refs = NULL;
+    free(topology.layers);
+    topology.layers = NULL;
+    free(alignment.layers);
+    alignment.layers = NULL;
+    return rc;
 }
 
 /* ========== Composite Load (MVP) ========== */
 
-/* TODO: Implement JSON parser and loader */
-/* This will be implemented next after we test the save path */
+/* TODO: Implement binary loader for v1 composites */

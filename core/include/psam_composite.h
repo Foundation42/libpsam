@@ -82,13 +82,6 @@ extern "C" {
 #define PSAMC_SOURCE_URI_MAX     256
 #define PSAMC_SOURCE_LICENSE_MAX 128
 
-/* Coverage weighting rules (v1 aligned composites) */
-typedef enum {
-    PSAM_COVER_NONE = 0,      /* No coverage weighting */
-    PSAM_COVER_LINEAR = 1,    /* Linear coverage: f(c) = c */
-    PSAM_COVER_SQRT = 2       /* Sqrt coverage: f(c) = sqrt(c) */
-} psam_coverage_rule_t;
-
 /* Section types */
 typedef enum {
     PSAMC_SECTION_MANIFEST = 1,    /* Integrity manifest */
@@ -97,6 +90,7 @@ typedef enum {
     PSAMC_SECTION_LAYER = 4,       /* Overlay layer */
     PSAMC_SECTION_METADATA = 5,    /* Human-readable metadata (name, desc, author) */
     PSAMC_SECTION_SAMPLER = 6,     /* Sampler defaults (v1.1+) */
+    PSAMC_SECTION_ALIGNMENT = 7,   /* Vocabulary alignment metadata */
     PSAMC_SECTION_EXTENSIONS = 99, /* Reserved for future use */
 } psamc_section_type_t;
 
@@ -242,12 +236,49 @@ typedef struct {
     psamc_layer_entry_t* layers;  /* Overlay layers */
 } psamc_topology_t;
 
+/* ========== V1 Aligned Composite Structures ========== */
+
+/* Per-layer vocabulary mapping */
+typedef struct psam_layer_map {
+    char layer_id[PSAM_LAYER_ID_MAX]; /* Layer identifier */
+    uint32_t local_vocab_size;     /* Size of layer's local vocabulary */
+    uint32_t local_unk;            /* Index of UNK in local vocab (if policy=UNK) */
+    float coverage;                /* Coverage ratio for this layer */
+
+    /* Local-to-unified dense map */
+    const uint32_t* l2u;           /* Dense array [local_vocab_size] */
+    char l2u_path[PSAMC_MAX_URL_LENGTH]; /* Path to l2u.bin file */
+    sha256_hash_t l2u_hash;        /* SHA-256 of l2u file */
+    uint64_t l2u_size_bytes;       /* File size */
+
+    /* Unified-to-local sparse map */
+    const uint32_t* u2l_pairs;     /* Pairs [unified_id, local_id] sorted by unified_id */
+    uint32_t u2l_pairs_count;      /* Number of pairs */
+    char u2l_path[PSAMC_MAX_URL_LENGTH]; /* Path to u2l.bin file */
+    sha256_hash_t u2l_hash;        /* SHA-256 of u2l file */
+    uint64_t u2l_size_bytes;       /* File size */
+} psam_layer_map_t;
+
+typedef struct {
+    uint32_t unified_vocab_size;   /* Size of unified vocabulary */
+    uint32_t unified_unk;          /* Index of UNK token in unified vocab */
+    psam_unknown_policy_t unknown_policy; /* Unknown token handling */
+    psam_coverage_rule_t coverage_rule;   /* Coverage weighting rule */
+    uint32_t layer_count;          /* Number of aligned layers (including base) */
+    uint32_t reserved;             /* Padding */
+    char unified_vocab_path[PSAMC_MAX_URL_LENGTH]; /* Path to unified vocab TSV */
+    sha256_hash_t unified_vocab_hash; /* SHA-256 of vocab file */
+    uint64_t unified_vocab_size_bytes; /* File size for verification */
+    psam_layer_map_t* layers;      /* Array of layer maps (owned) */
+} psam_alignment_info_t;
+
 typedef struct {
     psamc_manifest_t manifest;
     psamc_hyperparams_t hyperparams;
     psamc_topology_t topology;
     psamc_sampler_defaults_t sampler_defaults;
     psamc_calibration_t calibration;
+    psam_alignment_info_t alignment;
 } psamc_composite_t;
 
 typedef struct {
@@ -266,35 +297,6 @@ static inline psam_composite_layer_file_t psam_composite_layer_file(
 }
 
 /* ========== V1 Aligned Composite Structures ========== */
-
-/* Alignment info (loaded once with composite) */
-typedef struct {
-    uint32_t unified_vocab_size;   /* Size of unified vocabulary */
-    uint32_t unified_unk;          /* Index of UNK token in unified vocab */
-    char unified_vocab_path[PSAMC_MAX_URL_LENGTH]; /* Path to unified vocab TSV */
-    sha256_hash_t unified_vocab_hash; /* SHA-256 of vocab file */
-    uint64_t unified_vocab_size_bytes; /* File size for verification */
-} psam_alignment_info_t;
-
-/* Per-layer vocabulary mapping */
-typedef struct {
-    char layer_id[PSAM_LAYER_ID_MAX]; /* Layer identifier */
-    uint32_t local_vocab_size;     /* Size of layer's local vocabulary */
-    uint32_t local_unk;            /* Index of UNK in local vocab (if policy=UNK) */
-
-    /* Local-to-unified dense map */
-    const uint32_t* l2u;           /* Dense array [local_vocab_size] */
-    char l2u_path[PSAMC_MAX_URL_LENGTH]; /* Path to l2u.bin file */
-    sha256_hash_t l2u_hash;        /* SHA-256 of l2u file */
-    uint64_t l2u_size_bytes;       /* File size */
-
-    /* Unified-to-local sparse map */
-    const uint32_t* u2l_pairs;     /* Pairs [unified_id, local_id] sorted by unified_id */
-    uint32_t u2l_pairs_count;      /* Number of pairs */
-    char u2l_path[PSAMC_MAX_URL_LENGTH]; /* Path to u2l.bin file */
-    sha256_hash_t u2l_hash;        /* SHA-256 of u2l file */
-    uint64_t u2l_size_bytes;       /* File size */
-} psam_layer_map_t;
 
 /* Preset configurations */
 static const psamc_hyperparams_t PSAMC_PRESET_FAST_CONFIG = {
@@ -347,7 +349,8 @@ PSAM_API int psamc_save(
     const psam_model_t* base_model,
     const psamc_hyperparams_t* hyperparams,
     const psamc_manifest_t* manifest,
-    const psamc_topology_t* topology
+    const psamc_topology_t* topology,
+    const psam_alignment_info_t* alignment
 );
 
 /**
@@ -434,7 +437,8 @@ PSAM_API int psam_composite_save_v1(
     const uint32_t** layer_u2l_pairs,
     const uint32_t* layer_u2l_pair_counts,
     const char** layer_l2u_paths,
-    const char** layer_u2l_paths
+    const char** layer_u2l_paths,
+    uint32_t unified_vocab_size
 );
 
 #ifdef __cplusplus

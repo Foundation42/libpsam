@@ -13,45 +13,30 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Helper: Load vocabulary and find token ID */
-static int find_token_id(const char* vocab_path, const char* token) {
-    FILE* f = fopen(vocab_path, "r");
-    if (!f) return -1;
-
-    char line[4096];
-    while (fgets(line, sizeof(line), f)) {
-        char* tab = strchr(line, '\t');
-        if (!tab) continue;
-
-        uint32_t id;
-        *tab = '\0';
-        if (sscanf(line, "%u", &id) != 1) continue;
-        *tab = '\t';
-
-        char* tok = tab + 1;
-        size_t len = strlen(tok);
-        if (len > 0 && tok[len - 1] == '\n') tok[len - 1] = '\0';
-
-        if (strcmp(tok, token) == 0) {
-            fclose(f);
-            return (int)id;
+/* Helper: find a token ID in the unified vocabulary */
+static int find_unified_token_id(const psam_vocab_alignment_t* alignment, const char* token) {
+    if (!alignment || !token) {
+        return -1;
+    }
+    for (uint32_t i = 0; i < alignment->unified_vocab_size; ++i) {
+        if (alignment->unified_tokens[i] && strcmp(alignment->unified_tokens[i], token) == 0) {
+            return (int)i;
         }
     }
-
-    fclose(f);
     return -1;
 }
 
 int main(void) {
-    const char* hamlet_model_path = "corpora/text/Folger/models/hamlet_unified.psam";
-    const char* macbeth_model_path = "corpora/text/Folger/models/macbeth_unified.psam";
-    const char* vocab_path = "corpora/text/Folger/unified_vocab.tsv";
+    const char* hamlet_model_path = "corpora/text/Folger/models/hamlet.psam";
+    const char* macbeth_model_path = "corpora/text/Folger/models/macbeth.psam";
+    const char* hamlet_vocab_path = "corpora/text/Folger/models/hamlet.tsv";
+    const char* macbeth_vocab_path = "corpora/text/Folger/models/macbeth.tsv";
 
     printf("=== Aligned Composite Test ===\n\n");
 
     /* Step 1: Build vocabulary alignment */
     printf("Step 1: Building vocabulary alignment...\n");
-    const char* vocab_paths[] = {vocab_path, vocab_path};  /* Both use same unified vocab */
+    const char* vocab_paths[] = {hamlet_vocab_path, macbeth_vocab_path};
     uint32_t unified_size;
 
     psam_vocab_alignment_t* alignment = psam_build_vocab_alignment_from_files(
@@ -63,8 +48,8 @@ int main(void) {
     }
 
     printf("  Unified vocabulary: %u tokens\n", unified_size);
-    printf("  Layer 0 coverage: %.1f%%\n", psam_vocab_alignment_get_coverage(alignment, 0) * 100.0f);
-    printf("  Layer 1 coverage: %.1f%%\n\n", psam_vocab_alignment_get_coverage(alignment, 1) * 100.0f);
+    printf("  Hamlet coverage: %.1f%%\n", psam_vocab_alignment_get_coverage(alignment, 0) * 100.0f);
+    printf("  Macbeth coverage: %.1f%%\n\n", psam_vocab_alignment_get_coverage(alignment, 1) * 100.0f);
 
     /* Step 2: Load models */
     printf("Step 2: Loading models...\n");
@@ -102,6 +87,17 @@ int main(void) {
     }
     printf("  Created aligned composite with Hamlet as base\n");
 
+    /* Configure aligned composite policies */
+    psam_composite_aligned_set_unknown_policy(composite, PSAM_UNKNOWN_SKIP);
+    psam_composite_aligned_set_coverage_rule(composite, PSAM_COVER_LINEAR);
+    if (psam_composite_aligned_set_base_weight(composite, 1.0f) != 0) {
+        fprintf(stderr, "ERROR: Failed to set base weight\n");
+        psam_composite_aligned_destroy(composite);
+        psam_destroy(hamlet);
+        psam_destroy(macbeth);
+        return 1;
+    }
+
     /* Step 4: Add Macbeth overlay */
     printf("\nStep 4: Adding Macbeth overlay layer...\n");
     int rc = psam_composite_aligned_add_layer(
@@ -121,6 +117,22 @@ int main(void) {
     }
     printf("  Added Macbeth layer with weight 0.5\n\n");
 
+    if (psam_composite_aligned_update_layer_weight(composite, "macbeth", 0.5f) != 0) {
+        fprintf(stderr, "ERROR: Failed to update layer weight\n");
+        psam_composite_aligned_destroy(composite);
+        psam_destroy(hamlet);
+        psam_destroy(macbeth);
+        return 1;
+    }
+
+    if (psam_composite_aligned_update_layer_bias(composite, "macbeth", 0.1f) != 0) {
+        fprintf(stderr, "ERROR: Failed to update layer bias\n");
+        psam_composite_aligned_destroy(composite);
+        psam_destroy(hamlet);
+        psam_destroy(macbeth);
+        return 1;
+    }
+
     /* Step 5: Test prediction */
     printf("Step 5: Testing prediction...\n");
 
@@ -130,7 +142,7 @@ int main(void) {
     int valid_tokens = 0;
 
     for (int i = 0; i < 5; ++i) {
-        int id = find_token_id(vocab_path, context_tokens[i]);
+        int id = find_unified_token_id(alignment, context_tokens[i]);
         if (id < 0) {
             fprintf(stderr, "WARNING: Token '%s' not found in vocabulary\n", context_tokens[i]);
             continue;

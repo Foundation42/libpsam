@@ -67,6 +67,15 @@ typedef enum {
 } psam_unknown_policy_t;
 
 /**
+ * Coverage weighting rules for aligned composites
+ */
+typedef enum {
+    PSAM_COVER_NONE = 0,      /* No coverage weighting */
+    PSAM_COVER_LINEAR = 1,    /* Linear coverage: f(c) = c */
+    PSAM_COVER_SQRT = 2       /* Sqrt coverage: f(c) = sqrt(c) */
+} psam_coverage_rule_t;
+
+/**
  * Sparse entry for unified→local mapping
  * Sorted by unified_id for binary search
  */
@@ -120,6 +129,15 @@ typedef struct {
     bool owns_unified_tokens;               /* Whether to free unified_tokens on destroy */
 } psam_vocab_alignment_t;
 
+typedef struct psam_aligned_layer {
+    char* id;                               /* Layer identifier */
+    psam_model_t* model;                    /* Model pointer */
+    float weight;                           /* Layer blending weight */
+    float bias;                             /* Layer bias offset */
+    bool owns_model;                        /* Ownership flag */
+    uint32_t alignment_index;               /* Index into alignment->layer_remaps */
+} psam_aligned_layer_t;
+
 /**
  * Composite with vocabulary alignment
  *
@@ -129,6 +147,14 @@ typedef struct {
 typedef struct {
     psam_composite_t* composite;            /* Underlying composite (same-vocab assumption) */
     psam_vocab_alignment_t* alignment;      /* Vocabulary remapping */
+    psam_unknown_policy_t unknown_policy;   /* Unknown token handling */
+    psam_coverage_rule_t coverage_rule;     /* Coverage weighting rule */
+    psam_model_t* base_model;               /* Base model reference */
+    float base_weight;                      /* Base model weight */
+    bool owns_base_model;                   /* Whether to free base model on destroy */
+    psam_aligned_layer_t* layers;           /* Dynamic array of aligned layers */
+    size_t layer_count;                     /* Number of aligned overlay layers */
+    size_t layer_capacity;                  /* Allocated capacity for layers */
     bool owns_composite;                    /* Whether to free composite on destroy */
     bool owns_alignment;                    /* Whether to free alignment on destroy */
 } psam_composite_aligned_t;
@@ -218,6 +244,48 @@ PSAM_API int psam_composite_aligned_predict(
  * Destroy aligned composite
  */
 PSAM_API void psam_composite_aligned_destroy(psam_composite_aligned_t* composite);
+
+/**
+ * Configure coverage weighting rule for an aligned composite
+ */
+PSAM_API void psam_composite_aligned_set_coverage_rule(
+    psam_composite_aligned_t* composite,
+    psam_coverage_rule_t rule
+);
+
+/**
+ * Override unknown-token policy (defaults to alignment->unknown_policy)
+ */
+PSAM_API void psam_composite_aligned_set_unknown_policy(
+    psam_composite_aligned_t* composite,
+    psam_unknown_policy_t policy
+);
+
+/**
+ * Update the base weight used during aligned prediction
+ */
+PSAM_API int psam_composite_aligned_set_base_weight(
+    psam_composite_aligned_t* composite,
+    float weight
+);
+
+/**
+ * Update an aligned layer's weight (by layer identifier)
+ */
+PSAM_API int psam_composite_aligned_update_layer_weight(
+    psam_composite_aligned_t* composite,
+    const char* layer_id,
+    float new_weight
+);
+
+/**
+ * Update an aligned layer's bias (by layer identifier)
+ */
+PSAM_API int psam_composite_aligned_update_layer_bias(
+    psam_composite_aligned_t* composite,
+    const char* layer_id,
+    float new_bias
+);
 
 /* Debug/introspection helpers */
 

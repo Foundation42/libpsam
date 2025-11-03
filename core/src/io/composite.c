@@ -86,12 +86,40 @@ typedef struct {
 /* Sampler defaults (new in v1.1) */
 typedef struct {
     uint32_t logit_transform;  /* psam_logit_transform_t */
-    float temperature;
-    int32_t top_k;
-    float top_p;
-    uint64_t seed;
-    uint8_t reserved[12];
+   float temperature;
+   int32_t top_k;
+   float top_p;
+   uint64_t seed;
+   uint8_t reserved[12];
 } psamc_sampler_disk_t;
+
+typedef struct {
+    uint32_t unknown_policy;
+    uint32_t coverage_rule;
+    uint32_t unified_vocab_size;
+    uint32_t unified_unk;
+    uint32_t layer_count;
+    uint32_t reserved;
+    uint64_t unified_vocab_size_bytes;
+    char unified_vocab_path[PSAMC_MAX_URL_LENGTH];
+    uint8_t unified_vocab_hash[PSAMC_SOURCE_HASH_SIZE];
+    uint8_t reserved2[32];
+} psamc_alignment_header_disk_t;
+
+typedef struct {
+    char layer_id[PSAM_LAYER_ID_MAX];
+    uint32_t local_vocab_size;
+    uint32_t local_unk;
+    uint32_t u2l_pairs_count;
+    float coverage;
+    uint8_t reserved[12];
+    uint64_t l2u_size_bytes;
+    char l2u_path[PSAMC_MAX_URL_LENGTH];
+    uint8_t l2u_hash[PSAMC_SOURCE_HASH_SIZE];
+    uint64_t u2l_size_bytes;
+    char u2l_path[PSAMC_MAX_URL_LENGTH];
+    uint8_t u2l_hash[PSAMC_SOURCE_HASH_SIZE];
+} psamc_alignment_layer_disk_t;
 
 /* ===== Helper utilities ===== */
 
@@ -334,6 +362,143 @@ static int read_sampler_section(FILE* f, const psamc_section_entry_t* section, p
     return 0;
 }
 
+static void init_alignment_defaults(psam_alignment_info_t* alignment) {
+    if (!alignment) {
+        return;
+    }
+    memset(alignment, 0, sizeof(*alignment));
+}
+
+static size_t alignment_section_size(const psam_alignment_info_t* alignment) {
+    if (!alignment || alignment->layer_count == 0) {
+        return 0;
+    }
+    size_t size = sizeof(psamc_alignment_header_disk_t);
+    size += (size_t)alignment->layer_count * sizeof(psamc_alignment_layer_disk_t);
+    return size;
+}
+
+static int write_alignment_section(FILE* f, const psam_alignment_info_t* alignment) {
+    if (!f || !alignment || alignment->layer_count == 0 || !alignment->layers) {
+        return -1;
+    }
+
+    psamc_alignment_header_disk_t header = {0};
+    header.unknown_policy = (uint32_t)alignment->unknown_policy;
+    header.coverage_rule = (uint32_t)alignment->coverage_rule;
+    header.unified_vocab_size = alignment->unified_vocab_size;
+    header.unified_unk = alignment->unified_unk;
+    header.layer_count = alignment->layer_count;
+    header.unified_vocab_size_bytes = alignment->unified_vocab_size_bytes;
+    if (alignment->unified_vocab_path[0] != '\0') {
+        snprintf(header.unified_vocab_path, PSAMC_MAX_URL_LENGTH, "%s", alignment->unified_vocab_path);
+    }
+    memcpy(header.unified_vocab_hash, alignment->unified_vocab_hash.hash, PSAMC_SOURCE_HASH_SIZE);
+
+    if (fwrite(&header, sizeof(header), 1, f) != 1) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < alignment->layer_count; ++i) {
+        const psam_layer_map_t* map = &alignment->layers[i];
+        psamc_alignment_layer_disk_t disk = {0};
+        if (map->layer_id[0] != '\0') {
+            snprintf(disk.layer_id, PSAM_LAYER_ID_MAX, "%s", map->layer_id);
+        }
+        disk.local_vocab_size = map->local_vocab_size;
+        disk.local_unk = map->local_unk;
+        disk.u2l_pairs_count = map->u2l_pairs_count;
+        disk.coverage = map->coverage;
+        disk.l2u_size_bytes = map->l2u_size_bytes;
+        disk.u2l_size_bytes = map->u2l_size_bytes;
+        if (map->l2u_path[0] != '\0') {
+            snprintf(disk.l2u_path, PSAMC_MAX_URL_LENGTH, "%s", map->l2u_path);
+        }
+        if (map->u2l_path[0] != '\0') {
+            snprintf(disk.u2l_path, PSAMC_MAX_URL_LENGTH, "%s", map->u2l_path);
+        }
+        memcpy(disk.l2u_hash, map->l2u_hash.hash, PSAMC_SOURCE_HASH_SIZE);
+        memcpy(disk.u2l_hash, map->u2l_hash.hash, PSAMC_SOURCE_HASH_SIZE);
+
+        if (fwrite(&disk, sizeof(disk), 1, f) != 1) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int read_alignment_section(FILE* f, const psamc_section_entry_t* section, psam_alignment_info_t* out_alignment) {
+    if (!f || !section || !out_alignment) {
+        return -1;
+    }
+
+    if (psam_fseeko(f, (psam_off_t)section->offset, SEEK_SET) != 0) {
+        return -1;
+    }
+
+    psamc_alignment_header_disk_t header;
+    if (fread(&header, sizeof(header), 1, f) != 1) {
+        return -1;
+    }
+
+    init_alignment_defaults(out_alignment);
+    out_alignment->unknown_policy = (psam_unknown_policy_t)header.unknown_policy;
+    out_alignment->coverage_rule = (psam_coverage_rule_t)header.coverage_rule;
+    out_alignment->unified_vocab_size = header.unified_vocab_size;
+    out_alignment->unified_unk = header.unified_unk;
+    out_alignment->layer_count = header.layer_count;
+    out_alignment->unified_vocab_size_bytes = header.unified_vocab_size_bytes;
+    snprintf(out_alignment->unified_vocab_path, PSAMC_MAX_URL_LENGTH, "%s", header.unified_vocab_path);
+    memcpy(out_alignment->unified_vocab_hash.hash, header.unified_vocab_hash, PSAMC_SOURCE_HASH_SIZE);
+
+    if (header.layer_count == 0) {
+        return 0;
+    }
+
+    out_alignment->layers = calloc(header.layer_count, sizeof(psam_layer_map_t));
+    if (!out_alignment->layers) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < header.layer_count; ++i) {
+        psamc_alignment_layer_disk_t disk;
+        if (fread(&disk, sizeof(disk), 1, f) != 1) {
+            free(out_alignment->layers);
+            out_alignment->layers = NULL;
+            out_alignment->layer_count = 0;
+            return -1;
+        }
+
+        psam_layer_map_t* map = &out_alignment->layers[i];
+        snprintf(map->layer_id, PSAM_LAYER_ID_MAX, "%s", disk.layer_id);
+        map->local_vocab_size = disk.local_vocab_size;
+        map->local_unk = disk.local_unk;
+        map->u2l_pairs_count = disk.u2l_pairs_count;
+        map->coverage = disk.coverage;
+        map->l2u = NULL;
+        map->u2l_pairs = NULL;
+        snprintf(map->l2u_path, PSAMC_MAX_URL_LENGTH, "%s", disk.l2u_path);
+        snprintf(map->u2l_path, PSAMC_MAX_URL_LENGTH, "%s", disk.u2l_path);
+        memcpy(map->l2u_hash.hash, disk.l2u_hash, PSAMC_SOURCE_HASH_SIZE);
+        memcpy(map->u2l_hash.hash, disk.u2l_hash, PSAMC_SOURCE_HASH_SIZE);
+        map->l2u_size_bytes = disk.l2u_size_bytes;
+        map->u2l_size_bytes = disk.u2l_size_bytes;
+    }
+
+    return 0;
+}
+
+static void free_alignment(psam_alignment_info_t* alignment) {
+    if (!alignment) {
+        return;
+    }
+    free(alignment->layers);
+    alignment->layers = NULL;
+    alignment->layer_count = 0;
+    alignment->unified_vocab_size = 0;
+}
+
 static int write_layer_section(FILE* f, const psamc_topology_t* topology) {
     if (!f || !topology) {
         return -1;
@@ -482,7 +647,8 @@ int psamc_save(
     const psam_model_t* base_model,
     const psamc_hyperparams_t* hyperparams,
     const psamc_manifest_t* manifest,
-    const psamc_topology_t* topology
+    const psamc_topology_t* topology,
+    const psam_alignment_info_t* alignment
 ) {
     (void)base_model; /* Placeholder for future embedded support */
 
@@ -495,6 +661,10 @@ int psamc_save(
         num_sections++;
     }
     if (topology) {
+        num_sections++;
+    }
+    size_t alignment_size_bytes = alignment_section_size(alignment);
+    if (alignment_size_bytes > 0) {
         num_sections++;
     }
 
@@ -525,6 +695,15 @@ int psamc_save(
         sections[section_index].flags = 0;
         sections[section_index].offset = offset;
         sections[section_index].size = layer_section_size(topology);
+        offset += sections[section_index].size;
+        section_index++;
+    }
+
+    if (alignment_size_bytes > 0) {
+        sections[section_index].type = PSAMC_SECTION_ALIGNMENT;
+        sections[section_index].flags = 0;
+        sections[section_index].offset = offset;
+        sections[section_index].size = alignment_size_bytes;
         offset += sections[section_index].size;
         section_index++;
     }
@@ -574,6 +753,12 @@ int psamc_save(
     }
 
     if (topology && write_layer_section(f, topology) != 0) {
+        fclose(f);
+        free(sections);
+        return -1;
+    }
+
+    if (alignment_size_bytes > 0 && write_alignment_section(f, alignment) != 0) {
         fclose(f);
         free(sections);
         return -1;
@@ -897,9 +1082,12 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
     init_topology_defaults(&topology);
     psamc_sampler_defaults_t sampler_defaults;
     init_sampler_defaults(&sampler_defaults);
+    psam_alignment_info_t alignment_info;
+    init_alignment_defaults(&alignment_info);
 
     bool manifest_loaded = false;
     bool config_loaded = false;
+    bool alignment_loaded = false;
     uint64_t manifest_hash_offset = 0;
 
     for (uint32_t i = 0; i < header.num_sections; i++) {
@@ -918,6 +1106,7 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
                     free(sections);
                     fclose(f);
                     free_manifest(&manifest);
+                    free_alignment(&alignment_info);
                     return NULL;
                 }
                 config_loaded = true;
@@ -927,8 +1116,19 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
                     free(sections);
                     fclose(f);
                     free_manifest(&manifest);
+                    free_alignment(&alignment_info);
                     return NULL;
                 }
+                break;
+            case PSAMC_SECTION_ALIGNMENT:
+                if (read_alignment_section(f, section, &alignment_info) != 0) {
+                    free(sections);
+                    fclose(f);
+                    free_manifest(&manifest);
+                    free_topology(&topology);
+                    return NULL;
+                }
+                alignment_loaded = true;
                 break;
             case PSAMC_SECTION_SAMPLER:
                 if (read_sampler_section(f, section, &sampler_defaults) != 0) {
@@ -948,12 +1148,14 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
         free_manifest(&manifest);
         free_topology(&topology);
         fclose(f);
+        free_alignment(&alignment_info);
         return NULL;
     }
 
     if (!manifest_loaded) {
         free_topology(&topology);
         fclose(f);
+        free_alignment(&alignment_info);
         return NULL;
     }
 
@@ -963,6 +1165,7 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
     if (compute_self_hash_excluding(path, manifest_hash_offset, PSAMC_SOURCE_HASH_SIZE, &computed) != 0) {
         free_manifest(&manifest);
         free_topology(&topology);
+        free_alignment(&alignment_info);
         return NULL;
     }
 
@@ -970,12 +1173,14 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
         fprintf(stderr, "ERROR: .psamc self-hash mismatch (file may be corrupted)\\n");
         free_manifest(&manifest);
         free_topology(&topology);
+        free_alignment(&alignment_info);
         return NULL;
     }
 
     if (verify_integrity && psamc_verify_manifest(&manifest) != 0) {
         free_manifest(&manifest);
         free_topology(&topology);
+        free_alignment(&alignment_info);
         return NULL;
     }
 
@@ -987,6 +1192,7 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
     if (!composite) {
         free_manifest(&manifest);
         free_topology(&topology);
+        free_alignment(&alignment_info);
         return NULL;
     }
 
@@ -994,6 +1200,11 @@ psamc_composite_t* psamc_load(const char* path, bool verify_integrity) {
     composite->manifest = manifest;
     composite->topology = topology;
     composite->sampler_defaults = sampler_defaults;
+    if (alignment_loaded) {
+        composite->alignment = alignment_info;
+    } else {
+        init_alignment_defaults(&composite->alignment);
+    }
 
     return composite;
 }
@@ -1004,6 +1215,7 @@ void psamc_free(psamc_composite_t* composite) {
     }
     free_manifest(&composite->manifest);
     free_topology(&composite->topology);
+    free_alignment(&composite->alignment);
     free(composite);
 }
 
@@ -1105,7 +1317,7 @@ int psam_composite_save_file(
         snprintf(manifest.created_by, PSAMC_CREATED_BY_MAX, "libpsam");
     }
 
-    int rc = psamc_save(path, NULL, config, &manifest, &topology);
+    int rc = psamc_save(path, NULL, config, &manifest, &topology, NULL);
 
     free(manifest.refs);
     free_topology(&topology);

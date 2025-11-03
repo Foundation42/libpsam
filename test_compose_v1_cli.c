@@ -110,45 +110,37 @@ int main(void) {
         return 1;
     }
 
-    /* Basic JSON validation */
-    printf("\nChecking .psamc JSON schema...\n");
-    FILE* f = fopen("test_output/tragedies_v1.psamc", "r");
+    /* Inspect binary contents via CLI */
+    printf("\nInspecting composite metadata...\n");
+    if (run_command("./build/psam inspect --model test_output/tragedies_v1.psamc > test_output/inspect_tragedies.json") != 0) {
+        fprintf(stderr, "❌ psam inspect failed\n");
+        return 1;
+    }
+
+    FILE* f = fopen("test_output/inspect_tragedies.json", "r");
     if (!f) {
-        fprintf(stderr, "❌ Failed to open .psamc file\n");
+        fprintf(stderr, "❌ Unable to read inspect output\n");
         return 1;
     }
 
     char line[1024];
-    int has_version = 0, has_unified_vocab = 0, has_layers = 0;
-    while (fgets(line, sizeof(line), f)) {
-        if (strstr(line, "\"version\": 1")) has_version = 1;
-        if (strstr(line, "\"unified_vocab\"")) has_unified_vocab = 1;
-        if (strstr(line, "\"layers\"")) has_layers = 1;
+    if (!fgets(line, sizeof(line), f)) {
+        fclose(f);
+        fprintf(stderr, "❌ Inspect output empty\n");
+        return 1;
     }
     fclose(f);
 
-    if (!has_version) {
-        fprintf(stderr, "❌ .psamc missing version field\n");
+    if (!strstr(line, "\"type\":\"psamc\"")) {
+        fprintf(stderr, "❌ Inspect output missing psamc type\n");
         return 1;
     }
-    if (!has_unified_vocab) {
-        fprintf(stderr, "❌ .psamc missing unified_vocab field\n");
-        return 1;
-    }
-    if (!has_layers) {
-        fprintf(stderr, "❌ .psamc missing layers array\n");
+    if (!strstr(line, "\"layers\":")) {
+        fprintf(stderr, "❌ Inspect output missing layers field\n");
         return 1;
     }
 
-    printf("  ✓ version: 1\n");
-    printf("  ✓ unified_vocab present\n");
-    printf("  ✓ layers array present\n");
-
-    /* Display the .psamc for inspection */
-    printf("\n.psamc contents:\n");
-    printf("────────────────────────────────────────\n");
-    system("cat test_output/tragedies_v1.psamc");
-    printf("────────────────────────────────────────\n");
+    printf("  ✓ inspect reports psamc metadata\n");
 
     printf("\n🎉 V1 Aligned Composite CLI smoke test PASSED!\n");
     printf("\nGenerated files:\n");

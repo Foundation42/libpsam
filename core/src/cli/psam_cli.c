@@ -2211,6 +2211,7 @@ static int compose_command(int argc, char** argv) {
         if (strcmp(unknown_policy_str, "skip") == 0) {
             policy = PSAM_UNKNOWN_SKIP;
         }
+        alignment->unknown_policy = policy;
 
         psam_coverage_rule_t coverage = PSAM_COVER_NONE;
         if (strcmp(coverage_weight_str, "linear") == 0) {
@@ -2239,7 +2240,8 @@ static int compose_command(int argc, char** argv) {
             u2l_pairs,
             u2l_pair_counts,
             (const char**)l2u_paths,
-            (const char**)u2l_paths
+            (const char**)u2l_paths,
+            unified_size
         );
 
         /* Cleanup */
