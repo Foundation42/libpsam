@@ -52,6 +52,7 @@ corpora/
 *.psam
 *.psamc
 *.tsv
+test_output/
 test_vocab_alignment.c
 test_vocab_alignment
 COMPOSITE_VOCAB_TODO.md
