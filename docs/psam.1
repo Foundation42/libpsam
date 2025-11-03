@@ -55,7 +55,8 @@ for details. Common parameters include:
 Path to a .psam model file (required by most commands).
 .TP
 .B --context STRING
-Raw text used as context (requires --vocab).
+Raw text used as context. Aligned composites saved with a unified vocabulary will
+auto-load it; standalone .psam models still require --vocab.
 .TP
 .B --ctx-ids LIST
 Comma separated token IDs used as context.
@@ -74,7 +75,8 @@ Logit preprocessing mode: zscore (default), raw, legacy, or calibrated.
 Z-score normalization makes temperature work intuitively in 0.1-2.0 range.
 .TP
 .B --prompt STRING
-Alias for --context (text used as context, requires --vocab).
+Alias for --context. For aligned composites the unified vocab is detected automatically;
+otherwise pair it with --vocab or use --ctx-ids.
 .TP
 .B --seed N
 Deterministic random seed for generate.
@@ -134,6 +136,14 @@ psam compose --out combined.psamc \\
 psam generate --model model.psam \\
               --prompt "the cat" --vocab vocab.tsv \\
               --count 32 --temperature 0.8 --top_p 0.95
+.fi
+.PP
+Aligned composites with an embedded unified vocabulary no longer need the extra flag:
+.PP
+.nf
+psam generate --model tragedies_v1.psamc \\
+              --prompt "When shall we three meet again" \\
+              --count 40 --top_k 16
 .fi
 .SS Generate with deterministic sampling
 .PP

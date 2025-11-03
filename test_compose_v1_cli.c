@@ -150,6 +150,14 @@ int main(void) {
     }
     printf("  ✓ predict command succeeded\n");
 
+    printf("\nRunning generate with composite (auto vocab)...\n");
+    rc = run_command("./build/psam generate --model test_output/tragedies_v1.psamc --prompt \"to be or not to\" --count 12 --top_k 6 --quiet > /dev/null");
+    if (rc != 0) {
+        fprintf(stderr, "❌ psam generate failed with exit code %d\n", rc);
+        return 1;
+    }
+    printf("  ✓ generate command succeeded\n");
+
     printf("\n🎉 V1 Aligned Composite CLI smoke test PASSED!\n");
     printf("\nGenerated files:\n");
     printf("  Composite: test_output/tragedies_v1.psamc\n");

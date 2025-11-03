@@ -1016,9 +1016,11 @@ typedef struct {
 } predict_options_t;
 
 static void predict_usage(void) {
-    printf("Usage: psam predict --model model.psam (--ctx-ids 1,2,3 | --context \"text\" --vocab vocab.tsv) \n");
+    printf("Usage: psam predict --model model.psam (--ctx-ids 1,2,3 | --context \"text\" [--vocab vocab.tsv])\n");
     printf("       [--top_k 5] [--temperature 1.0] [--top_p 0.95] [--logit-transform zscore|raw|legacy|calibrated] [--pretty]\n");
     printf("\nAliases: --prompt can be used instead of --context\n");
+    printf("       When targeting aligned composites, the CLI auto-loads the unified vocabulary.\n");
+    printf("       Provide --vocab for raw .psam models or composites without vocab metadata.\n");
 }
 
 typedef struct {
@@ -1038,10 +1040,12 @@ typedef struct {
 } generate_options_t;
 
 static void generate_usage(void) {
-    printf("Usage: psam generate --model model.psam (--ctx-ids 1,2,3 | --context \"text\" --vocab vocab.tsv) \n");
-    printf("       [--count 32] [--top_k 16] [--top_p 0.95] [--temperature 1.0] [--logit-transform zscore|raw|legacy|calibrated] \n");
+    printf("Usage: psam generate --model model.psam (--ctx-ids 1,2,3 | --context \"text\" [--vocab vocab.tsv])\n");
+    printf("       [--count 32] [--top_k 16] [--top_p 0.95] [--temperature 1.0] [--logit-transform zscore|raw|legacy|calibrated]\n");
     printf("       [--seed N] [--pretty] [--quiet]\n");
     printf("\nAliases: --prompt can be used instead of --context\n");
+    printf("       Aligned composites saved with vocab metadata can generate from prompts without --vocab.\n");
+    printf("       Supply --vocab for standalone .psam models or unlabeled composites, or use --ctx-ids.\n");
 }
 
 static int generate_command(int argc, char** argv) {

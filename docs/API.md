@@ -616,10 +616,60 @@ psam_vocab_alignment_t* align = psam_build_vocab_alignment_from_files(
     vocabs, 2, NULL, &unified_size);
 ```
 
-**Step 3: Create aligned composite (Week 3 API)**
+**Step 3: Create aligned composite and add overlays**
 ```c
-// Coming in Week 3: psam_create_composite_aligned()
-// This will wrap a standard composite and add automatic remapping
+psam_model_t* hamlet = psam_load("hamlet.psam");
+psam_model_t* macbeth = psam_load("macbeth.psam");
+
+psam_composite_aligned_t* comp = psam_create_composite_aligned(
+    hamlet,          /* base model */
+    align,           /* alignment from Step 2 */
+    true,            /* composite takes ownership of alignment */
+    false            /* caller keeps the base model handle */
+);
+
+psam_composite_aligned_set_unknown_policy(comp, PSAM_UNKNOWN_SKIP);
+psam_composite_aligned_set_coverage_rule(comp, PSAM_COVER_LINEAR);
+psam_composite_aligned_add_layer(comp, "macbeth", macbeth, 0.8f, false);
+```
+
+**Step 4: Save / load via `.psamc` (v1)**
+```c
+/* Extract alignment buffers if you want to call the low-level save helper */
+const psam_vocab_alignment_t* alignment = psam_composite_aligned_get_alignment(comp);
+
+psam_composite_save_v1(
+    "tragedies_v1.psamc",
+    "libpsam-cli",
+    "unified.tsv",
+    PSAM_UNKNOWN_SKIP,
+    PSAM_COVER_LINEAR,
+    NULL,                      /* sampler defaults (NULL = current runtime defaults) */
+    alignment->num_layers,
+    layer_ids, layer_model_paths,
+    weights, biases,
+    local_vocab_sizes,
+    local_to_unified_arrays,
+    unified_to_local_pairs,
+    unified_to_local_counts,
+    l2u_paths,
+    u2l_paths,
+    alignment->unified_vocab_size
+);
+
+/* Or simply let the loader reconstruct everything */
+psam_composite_aligned_t* restored =
+    psam_composite_load_aligned("tragedies_v1.psamc", /*verify_integrity=*/true);
+
+psam_prediction_t preds[16];
+int n = psam_composite_aligned_predict_with_sampler(
+    restored,
+    ctx_ids,
+    ctx_len,
+    NULL,   /* NULL => use sampler defaults saved in the file */
+    preds,
+    16
+);
 ```
 
 ##### Design Notes

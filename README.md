@@ -105,6 +105,13 @@ psam ids      --vocab vocab.tsv --ids 12,44,77
 
 Flags are consistent across commands (`--model`, `--prompt`, `--temperature`, `--top_k`, `--top_p`, `--pretty`, etc.). All commands emit JSON by default; pass `--pretty` for human-readable output. Exit codes follow `0` (ok), `2` (bad args), `3` (file missing), `4` (checksum failed), `5` (internal error).
 
+When you build an **aligned composite** with `psam compose --from-vocabs ...`, the unified vocabulary
+path is stored inside the `.psamc`, so prompt-based prediction no longer needs an extra `--vocab`:
+
+```
+psam predict --model tragedies_v1.psamc --prompt "When shall we three meet again" --top_k 10
+```
+
 **Temperature & Sampling (v1.1+):** The CLI supports intuitive temperature control (0.1-2.0 range) via z-score normalization. Use `--temperature 0.5` for deterministic output, `--temperature 1.5` for creative variation. See **[Sampler Guide](./docs/Sampler.md)** for details.
 
 ### Sample Corpora

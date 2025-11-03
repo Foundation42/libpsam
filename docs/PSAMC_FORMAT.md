@@ -183,6 +183,62 @@ typedef struct {
 } psamc_layer_meta_t;
 ```
 
+## Alignment Section (Aligned Composites)
+
+Aligned composites extend the manifest with vocabulary remapping metadata so that heterogeneous
+models can share a unified token space. The `alignment` block is optional; when present it occupies
+a dedicated section in the v1 JSON payload saved by `psam_composite_save_v1`.
+
+```c
+typedef struct {
+    char layer_id[64];            // Layer identifier matching topology entry
+    uint32_t local_vocab_size;    // Size of the layer's original vocabulary
+    uint32_t local_unk;           // Index of the layer UNK token (if applicable)
+    float coverage;               // Ratio of unified vocab covered by this layer
+
+    char l2u_path[256];           // Path to dense local->unified map (*.l2u.u32)
+    sha256_hash_t l2u_hash;       // Integrity hash for the binary map
+    uint64_t l2u_size_bytes;      // File size for verification
+
+    char u2l_path[256];           // Path to sparse unified->local map (*.u2l.pairs)
+    sha256_hash_t u2l_hash;       // Integrity hash for the pairs file
+    uint64_t u2l_size_bytes;      // File size for verification
+
+    uint32_t u2l_pairs_count;     // Number of (unified_id, local_id) pairs
+} psam_layer_map_t;
+
+typedef struct {
+    uint32_t unified_vocab_size;      // Unified vocabulary length
+    uint32_t unified_unk;             // Index of the unified UNK token
+    psam_unknown_policy_t unknown_policy;  // How unknown tokens are handled
+    psam_coverage_rule_t coverage_rule;    // Coverage weighting strategy
+    uint32_t layer_count;             // Number of aligned layers (base + overlays)
+
+    char unified_vocab_path[256];     // Unified vocab TSV path (typically relative)
+    sha256_hash_t unified_vocab_hash; // Integrity hash for the TSV
+    uint64_t unified_vocab_size_bytes;// File size for verification
+
+    psam_layer_map_t* layers;         // Array of per-layer remap metadata
+} psam_alignment_info_t;
+```
+
+**Path normalization**
+
+`psam_composite_save_v1()` stores map/vocab paths relative to the `.psamc` file when possible, so a
+checkpoint folder can be shared wholesale. During load, `psam_composite_load_aligned()` resolves:
+
+1. The path relative to the composite file; if not found,
+2. The raw path as written in the manifest (allowing absolute paths or legacy layouts).
+
+Hashes and byte counts are verified against whichever file is ultimately opened.
+
+**Unified vocab auto-discovery**
+
+When the alignment section includes a valid `unified_vocab_path`, the CLI exposes it so commands like
+`psam predict --model aligned.psamc --prompt "..."`
+can tokenize text prompts without an extra `--vocab` argument. If the TSV is unavailable, the runtime
+falls back to rebuilding the unified vocabulary from the alignment tables in memory.
+
 ## Usage Examples
 
 ### Creating a Composite

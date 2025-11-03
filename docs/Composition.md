@@ -102,6 +102,32 @@ topology_type: layered|sequenced|routed|ensemble
 [Model References]
 - Either embedded .psam models
 - Or URLs/paths to external models
+
+## **Aligned Composite Workflow**
+
+Week 3 introduced aligned composites: a layered blend that shares a unified vocabulary even when
+each source model was trained on a different local vocab. The runtime now exposes:
+
+- `psam_build_vocab_alignment_from_files()` to create a unified lexicon plus bidirectional maps.
+- `psam_create_composite_aligned()` / `psam_composite_aligned_predict_with_sampler()` for
+  inference through the unified space.
+- `psam_composite_save_v1()` / `psam_composite_load_aligned()` to persist the alignment alongside
+  the composite manifest, including SHA-256 checks for the map binaries and the unified vocab file.
+
+CLI highlights:
+
+- `psam compose --from-vocabs ...` emits `.psamc` artifacts with an `alignment` block that stores
+  relative paths for `*.l2u.u32` / `*.u2l.pairs` remap files and the unified `*.tsv`.
+- `psam predict --model aligned.psamc --prompt "..."` no longer needs a `--vocab` flag; for aligned
+  composites the CLI resolves the saved unified vocabulary automatically. (Raw `.psam` models still
+  require `--vocab`, and you can always fall back to `--ctx-ids`.)
+- `psam generate` uses the same auto-discovery, so long-form sampling tests can be driven end-to-end
+  from the saved composite.
+
+This closes the loop we sketched in the sprint notes: researchers can build a federated composite
+from Shakespeare plays, programming-language corpora, or multilingual domains, save it once, and hand
+the `.psamc` to a teammate who can immediately run `psam predict`/`psam generate` against it without
+remembering the supporting vocab files.
 ```
 
 ## **Advanced Composition Features**
