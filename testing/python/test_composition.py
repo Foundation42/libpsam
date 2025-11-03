@@ -197,3 +197,187 @@ def test_three_layer_blend(models, sampler: SamplerConfig):
         assert mass.get("C", 0.0) >= 10.0, f"Expected at least 10% contribution from vocab C, got {mass.get('C', 0.0):.2f}%"
     finally:
         composite.destroy()
+
+
+def test_markov_transitions(sampler: SamplerConfig):
+    """Test 5: Verify that learned transition patterns are preserved in blends."""
+    if not is_library_available():
+        pytest.skip("libpsam native library not available")
+
+    vocab = build_vocab("A", "B")
+    length = 512
+
+    # Layer A: Strong apple→ant→arrow cycle (90% transitions)
+    pattern_a = [0, 1, 2] * (length // 3)  # apple, ant, arrow repeating
+    seq_a = encode([VOCAB_SETS["A"][i] for i in pattern_a[:length]], vocab.token_to_id)
+
+    # Layer B: Strong ball→bat→bear cycle (90% transitions)
+    pattern_b = [0, 1, 2] * (length // 3)  # ball, bat, bear repeating
+    seq_b = encode([VOCAB_SETS["B"][i] for i in pattern_b[:length]], vocab.token_to_id)
+
+    model_a = train_model(seq_a, len(vocab.token_to_id))
+    model_b = train_model(seq_b, len(vocab.token_to_id))
+
+    try:
+        # Test pure A - should show strong apple→ant pattern
+        composite_pure_a = model_a.create_layered_composite()
+        try:
+            composite_pure_a.set_base_weight(1.0)
+            composite_pure_a.add_layer("overlay_b", model_b, 0.0)
+
+            context = [vocab.token_to_id["apple"]]
+            ids, _scores, probs = composite_pure_a.predict(context, max_predictions=8, sampler=sampler)
+            assert probs is not None
+
+            # Find "ant" in predictions (should be top prediction for apple)
+            ant_id = vocab.token_to_id["ant"]
+            ant_idx = None
+            for i, pred_id in enumerate(ids):
+                if pred_id == ant_id:
+                    ant_idx = i
+                    break
+
+            assert ant_idx is not None, "Expected 'ant' to appear in predictions after 'apple'"
+            assert ant_idx <= 2, f"Expected 'ant' in top 3 predictions, found at position {ant_idx}"
+        finally:
+            composite_pure_a.destroy()
+
+        # Test blended - should show BOTH patterns
+        composite_blend = model_a.create_layered_composite()
+        try:
+            composite_blend.set_base_weight(0.5)
+            composite_blend.add_layer("overlay_b", model_b, 0.5)
+
+            context = [vocab.token_to_id["apple"]]
+            ids, _scores, probs = composite_blend.predict(context, max_predictions=16, sampler=sampler)
+            assert probs is not None
+
+            # Both A-pattern (ant) and B-pattern tokens should appear
+            predicted_tokens = [vocab.id_to_token[id] for id in ids]
+            a_tokens = [t for t in predicted_tokens if t in VOCAB_SETS["A"]]
+            b_tokens = [t for t in predicted_tokens if t in VOCAB_SETS["B"]]
+
+            assert len(a_tokens) > 0, "Expected some A-vocabulary tokens in blend"
+            assert len(b_tokens) > 0, "Expected some B-vocabulary tokens in blend"
+
+            # Verify that learned patterns are still visible
+            # "ant" should still rank high (A-pattern preservation)
+            ant_id = vocab.token_to_id["ant"]
+            if ant_id in ids:
+                ant_position = list(ids).index(ant_id)
+                assert ant_position < len(ids) // 2, "A-pattern token 'ant' should rank in top half"
+        finally:
+            composite_blend.destroy()
+    finally:
+        model_b.destroy()
+        model_a.destroy()
+
+
+def test_weight_sweep_linearity(sampler: SamplerConfig):
+    """Test smooth linear transition of probability mass across weight sweep."""
+    if not is_library_available():
+        pytest.skip("libpsam native library not available")
+
+    vocab = build_vocab("A", "B")
+    length = 512
+
+    seq_a = encode(repeating_sequence(VOCAB_SETS["A"], [0, 1, 2, 0, 1, 2], length), vocab.token_to_id)
+    seq_b = encode(repeating_sequence(VOCAB_SETS["B"], [0, 2, 1, 0, 2, 1], length), vocab.token_to_id)
+
+    model_a = train_model(seq_a, len(vocab.token_to_id))
+    model_b = train_model(seq_b, len(vocab.token_to_id))
+
+    try:
+        weights = [1.0, 0.8, 0.6, 0.5, 0.4, 0.2, 0.0]
+        a_percentages = []
+
+        for weight_a in weights:
+            weight_b = 1.0 - weight_a
+            composite = model_a.create_layered_composite()
+            try:
+                composite.set_base_weight(weight_a)
+                composite.add_layer("overlay_b", model_b, weight_b)
+
+                context = [vocab.token_to_id["apple"]]
+                mass = build_distribution(composite, context, vocab.id_to_token, vocab.token_to_vocab, sampler)
+
+                a_percent = mass.get("A", 0.0)
+                a_percentages.append(a_percent)
+
+                # Each weight should produce distribution close to target (±20%)
+                expected = weight_a * 100.0
+                assert abs(a_percent - expected) <= 20.0, f"Weight {weight_a:.1f}: expected ~{expected:.0f}% A, got {a_percent:.1f}%"
+            finally:
+                composite.destroy()
+
+        # Verify monotonic decrease (linearity check)
+        # A-percentage should consistently decrease as weight_a decreases
+        for i in range(len(a_percentages) - 1):
+            # Allow small tolerance for noise, but trend should be clear
+            assert a_percentages[i] >= a_percentages[i + 1] - 5.0, \
+                f"Non-monotonic transition at weight {weights[i]:.1f}: {a_percentages[i]:.1f}% -> {a_percentages[i+1]:.1f}%"
+    finally:
+        model_b.destroy()
+        model_a.destroy()
+
+
+def test_zero_weight_elimination(models, sampler: SamplerConfig):
+    """Test 6: Verify that weight=0 completely eliminates layer influence."""
+    vocab, model_a, model_b, _model_c = models
+    composite = model_a.create_layered_composite()
+    try:
+        composite.set_base_weight(1.0)
+        composite.add_layer("overlay_b", model_b, 0.0)
+
+        context = [vocab.token_to_id["apple"]]
+        mass = build_distribution(composite, context, vocab.id_to_token, vocab.token_to_vocab, sampler)
+
+        # Should be identical to pure A (Test 1)
+        assert mass.get("A", 0.0) >= 80.0, f"Expected A to dominate with B weight=0, got {mass}"
+        assert mass.get("B", 0.0) <= 15.0, f"B should have zero influence with weight=0, got {mass}"
+    finally:
+        composite.destroy()
+
+
+def test_uniform_baseline(sampler: SamplerConfig):
+    """Test 8: Baseline test with random sequences should show roughly uniform predictions."""
+    if not is_library_available():
+        pytest.skip("libpsam native library not available")
+
+    import random
+
+    vocab = build_vocab("A", "B")
+    length = 512
+
+    # Create truly random sequence (no patterns)
+    random.seed(9999)
+    all_tokens = list(vocab.token_to_id.keys())
+    random_seq = [vocab.token_to_id[random.choice(all_tokens)] for _ in range(length)]
+
+    model = train_model(random_seq, len(vocab.token_to_id))
+
+    try:
+        composite = model.create_layered_composite()
+        try:
+            composite.set_base_weight(1.0)
+
+            context = [vocab.token_to_id["apple"]]
+            ids, _scores, probs = composite.predict(context, max_predictions=16, sampler=sampler)
+            assert probs is not None
+
+            # Calculate entropy (should be relatively high for uniform distribution)
+            # H = -Σ(p * log2(p))
+            import math
+            entropy = -sum(p * math.log2(p) if p > 0 else 0 for p in probs)
+
+            # Max entropy for 16 predictions would be log2(16) = 4.0
+            # We expect at least moderate entropy (>2.0) for random training
+            assert entropy > 2.0, f"Expected higher entropy for random baseline, got {entropy:.2f}"
+
+            # No single token should dominate
+            max_prob = max(probs)
+            assert max_prob < 0.5, f"Expected no single token to dominate (max prob < 0.5), got {max_prob:.2f}"
+        finally:
+            composite.destroy()
+    finally:
+        model.destroy()

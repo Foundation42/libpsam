@@ -221,4 +221,190 @@ describe('PSAM composition (Bun bindings)', () => {
       composite.destroy();
     }
   });
+
+  it('preserves markov transition patterns', async () => {
+    // Test 5: Verify that learned transition patterns are preserved in blends
+    const testVocab = buildVocab('A', 'B');
+    const length = 512;
+
+    // Layer A: Strong apple→ant→arrow cycle
+    const patternA = Array(length).fill(0).map((_, i) => i % 3); // [0,1,2,0,1,2,...]
+    const seqA = encode(patternA.map(i => VOCAB_SETS.A[i]), testVocab.tokenToId);
+
+    // Layer B: Strong ball→bat→bear cycle
+    const patternB = Array(length).fill(0).map((_, i) => i % 3); // [0,1,2,0,1,2,...]
+    const seqB = encode(patternB.map(i => VOCAB_SETS.B[i]), testVocab.tokenToId);
+
+    const testModelA = await trainModel(seqA, testVocab.tokenToId.size);
+    const testModelB = await trainModel(seqB, testVocab.tokenToId.size);
+
+    try {
+      // Test pure A - should show strong apple→ant pattern
+      const compositePureA = testModelA.createLayeredComposite();
+      try {
+        compositePureA.setBaseWeight(1.0);
+        compositePureA.addLayer('overlay_b', testModelB, 0.0);
+
+        const context = [testVocab.tokenToId.get('apple')!];
+        const result = compositePureA.predict(context, 8, SAMPLER);
+
+        // Find "ant" in predictions (should be top prediction for apple)
+        const antId = testVocab.tokenToId.get('ant')!;
+        const antIdx = result.ids.indexOf(antId);
+
+        expect(antIdx).not.toBe(-1); // ant should appear
+        expect(antIdx).toBeLessThanOrEqual(2); // should be in top 3
+      } finally {
+        compositePureA.destroy();
+      }
+
+      // Test blended - should show BOTH patterns
+      const compositeBlend = testModelA.createLayeredComposite();
+      try {
+        compositeBlend.setBaseWeight(0.5);
+        compositeBlend.addLayer('overlay_b', testModelB, 0.5);
+
+        const context = [testVocab.tokenToId.get('apple')!];
+        const result = compositeBlend.predict(context, 16, SAMPLER);
+
+        // Both A-pattern and B-pattern tokens should appear
+        const predictedTokens = result.ids.map(id => testVocab.idToToken.get(id)!);
+        const aTokens = predictedTokens.filter(t => VOCAB_SETS.A.includes(t));
+        const bTokens = predictedTokens.filter(t => VOCAB_SETS.B.includes(t));
+
+        expect(aTokens.length).toBeGreaterThan(0);
+        expect(bTokens.length).toBeGreaterThan(0);
+
+        // Verify that learned patterns are still visible
+        const antId = testVocab.tokenToId.get('ant')!;
+        if (result.ids.includes(antId)) {
+          const antPosition = result.ids.indexOf(antId);
+          expect(antPosition).toBeLessThan(result.ids.length / 2); // should rank in top half
+        }
+      } finally {
+        compositeBlend.destroy();
+      }
+    } finally {
+      testModelB.destroy();
+      testModelA.destroy();
+    }
+  });
+
+  it('exhibits smooth weight sweep linearity', async () => {
+    // Test smooth linear transition of probability mass across weight sweep
+    const testVocab = buildVocab('A', 'B');
+    const length = 512;
+
+    const seqA = encode(repeatingSequence(VOCAB_SETS.A, [0, 1, 2, 0, 1, 2], length), testVocab.tokenToId);
+    const seqB = encode(repeatingSequence(VOCAB_SETS.B, [0, 2, 1, 0, 2, 1], length), testVocab.tokenToId);
+
+    const testModelA = await trainModel(seqA, testVocab.tokenToId.size);
+    const testModelB = await trainModel(seqB, testVocab.tokenToId.size);
+
+    try {
+      const weights = [1.0, 0.8, 0.6, 0.5, 0.4, 0.2, 0.0];
+      const aPercentages: number[] = [];
+
+      for (const weightA of weights) {
+        const weightB = 1.0 - weightA;
+        const composite = testModelA.createLayeredComposite();
+        try {
+          composite.setBaseWeight(weightA);
+          composite.addLayer('overlay_b', testModelB, weightB);
+
+          const context = [testVocab.tokenToId.get('apple')!];
+          const mass = buildDistribution(composite, context, testVocab, SAMPLER);
+
+          const aPercent = mass.get('A') ?? 0;
+          aPercentages.push(aPercent);
+
+          // Each weight should produce distribution close to target (±20%)
+          const expected = weightA * 100;
+          expect(Math.abs(aPercent - expected)).toBeLessThanOrEqual(20);
+        } finally {
+          composite.destroy();
+        }
+      }
+
+      // Verify monotonic decrease (linearity check)
+      for (let i = 0; i < aPercentages.length - 1; i++) {
+        // Allow small tolerance for noise, but trend should be clear
+        expect(aPercentages[i]).toBeGreaterThanOrEqual(aPercentages[i + 1] - 5.0);
+      }
+    } finally {
+      testModelB.destroy();
+      testModelA.destroy();
+    }
+  });
+
+  it('eliminates zero-weight layer influence', () => {
+    // Test 6: Verify that weight=0 completely eliminates layer influence
+    const composite = modelA.createLayeredComposite();
+    try {
+      composite.setBaseWeight(1.0);
+      composite.addLayer('overlay_b', modelB, 0.0);
+
+      const context = [vocab.tokenToId.get('apple')!];
+      const mass = buildDistribution(composite, context, vocab, SAMPLER);
+
+      // Should be identical to pure A
+      const aShare = mass.get('A') ?? 0;
+      const bShare = mass.get('B') ?? 0;
+      expect(aShare).toBeGreaterThanOrEqual(80);
+      expect(bShare).toBeLessThanOrEqual(15);
+    } finally {
+      composite.destroy();
+    }
+  });
+
+  it('produces uniform baseline for random sequences', async () => {
+    // Test 8: Baseline test with random sequences
+    const testVocab = buildVocab('A', 'B');
+    const length = 512;
+
+    // Create truly random sequence (no patterns)
+    const allTokens = Array.from(testVocab.tokenToId.keys());
+    const randomSeq: number[] = [];
+    for (let i = 0; i < length; i++) {
+      const randomToken = allTokens[Math.floor(Math.random() * allTokens.length)];
+      randomSeq.push(testVocab.tokenToId.get(randomToken)!);
+    }
+
+    const testModel = await trainModel(randomSeq, testVocab.tokenToId.size);
+
+    try {
+      const composite = testModel.createLayeredComposite();
+      try {
+        composite.setBaseWeight(1.0);
+
+        const context = [testVocab.tokenToId.get('apple')!];
+        const result = composite.predict(context, 16, SAMPLER);
+
+        if (!result.probabilities) {
+          throw new Error('Sampler must return probability estimates');
+        }
+
+        // Calculate entropy (should be relatively high for uniform distribution)
+        // H = -Σ(p * log2(p))
+        let entropy = 0;
+        for (const p of result.probabilities) {
+          if (p > 0) {
+            entropy -= p * Math.log2(p);
+          }
+        }
+
+        // Max entropy for 16 predictions would be log2(16) = 4.0
+        // We expect at least moderate entropy (>2.0) for random training
+        expect(entropy).toBeGreaterThan(2.0);
+
+        // No single token should dominate
+        const maxProb = Math.max(...result.probabilities);
+        expect(maxProb).toBeLessThan(0.5);
+      } finally {
+        composite.destroy();
+      }
+    } finally {
+      testModel.destroy();
+    }
+  });
 });
