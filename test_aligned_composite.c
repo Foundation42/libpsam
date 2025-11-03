@@ -8,10 +8,17 @@
  */
 
 #include "core/include/psam.h"
+#include "core/include/psam_composite.h"
 #include "core/include/psam_vocab_alignment.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 /* Helper: find a token ID in the unified vocabulary */
 static int find_unified_token_id(const psam_vocab_alignment_t* alignment, const char* token) {
@@ -23,6 +30,22 @@ static int find_unified_token_id(const psam_vocab_alignment_t* alignment, const 
             return (int)i;
         }
     }
+    return -1;
+}
+
+static int ensure_dir(const char* path) {
+    if (!path || path[0] == '\0') {
+        return -1;
+    }
+#ifdef _WIN32
+    if (_mkdir(path) == 0 || errno == EEXIST) {
+        return 0;
+    }
+#else
+    if (mkdir(path, 0755) == 0 || errno == EEXIST) {
+        return 0;
+    }
+#endif
     return -1;
 }
 
@@ -75,7 +98,8 @@ int main(void) {
     psam_composite_aligned_t* composite = psam_create_composite_aligned(
         hamlet,  /* base */
         alignment,
-        true  /* owns alignment */
+        true,  /* owns alignment */
+        false /* owns base */
     );
 
     if (!composite) {
@@ -190,6 +214,123 @@ int main(void) {
                preds[i].score,
                preds[i].calibrated_prob);
     }
+
+    /* Round-trip save/load test using the public API */
+    if (ensure_dir("test_output") != 0 || ensure_dir("test_output/maps") != 0) {
+        fprintf(stderr, "ERROR: Failed to create test_output directories\n");
+        psam_composite_aligned_destroy(composite);
+        psam_destroy(hamlet);
+        psam_destroy(macbeth);
+        return 1;
+    }
+
+    const char* save_layer_ids[2] = {"hamlet", "macbeth"};
+    const char* save_model_paths[2] = {hamlet_model_path, macbeth_model_path};
+    float save_weights[2] = {1.0f, 0.5f};
+    float save_biases[2] = {0.0f, 0.1f};
+    const uint32_t save_local_vocab_sizes[2] = {
+        alignment->layer_remaps[0].local_vocab_size,
+        alignment->layer_remaps[1].local_vocab_size
+    };
+    const uint32_t* save_l2u_maps[2] = {
+        alignment->layer_remaps[0].local_to_unified,
+        alignment->layer_remaps[1].local_to_unified
+    };
+
+    uint32_t* save_u2l_pairs_buf[2] = {NULL, NULL};
+    const uint32_t* save_u2l_pairs[2] = {NULL, NULL};
+    const uint32_t save_u2l_counts[2] = {
+        alignment->layer_remaps[0].unified_to_local_count,
+        alignment->layer_remaps[1].unified_to_local_count
+    };
+
+    for (size_t i = 0; i < 2; ++i) {
+        uint32_t count = save_u2l_counts[i];
+        if (count > 0) {
+            save_u2l_pairs_buf[i] = malloc((size_t)count * 2 * sizeof(uint32_t));
+            if (!save_u2l_pairs_buf[i]) {
+                fprintf(stderr, "ERROR: Out of memory building u2l pairs\n");
+                for (size_t k = 0; k < i; ++k) {
+                    free(save_u2l_pairs_buf[k]);
+                }
+                psam_composite_aligned_destroy(composite);
+                psam_destroy(hamlet);
+                psam_destroy(macbeth);
+                return 1;
+            }
+            for (uint32_t j = 0; j < count; ++j) {
+                save_u2l_pairs_buf[i][j * 2 + 0] = alignment->layer_remaps[i].unified_to_local_sparse[j].unified_id;
+                save_u2l_pairs_buf[i][j * 2 + 1] = alignment->layer_remaps[i].unified_to_local_sparse[j].local_id;
+            }
+            save_u2l_pairs[i] = save_u2l_pairs_buf[i];
+        }
+    }
+
+    char save_l2u_paths[2][256];
+    char save_u2l_paths[2][256];
+    snprintf(save_l2u_paths[0], sizeof(save_l2u_paths[0]), "test_output/maps/hamlet_api.l2u.u32");
+    snprintf(save_l2u_paths[1], sizeof(save_l2u_paths[1]), "test_output/maps/macbeth_api.l2u.u32");
+    snprintf(save_u2l_paths[0], sizeof(save_u2l_paths[0]), "test_output/maps/hamlet_api.u2l.pairs");
+    snprintf(save_u2l_paths[1], sizeof(save_u2l_paths[1]), "test_output/maps/macbeth_api.u2l.pairs");
+
+    const char* l2u_path_ptrs[2] = {save_l2u_paths[0], save_l2u_paths[1]};
+    const char* u2l_path_ptrs[2] = {save_u2l_paths[0], save_u2l_paths[1]};
+    const char* unified_vocab_path = "corpora/text/Folger/unified_vocab.tsv";
+
+    int save_rc = psam_composite_save_v1(
+        "test_output/aligned_unit.psamc",
+        "test-aligned",
+        unified_vocab_path,
+        PSAM_UNKNOWN_SKIP,
+        PSAM_COVER_LINEAR,
+        NULL,
+        2,
+        save_layer_ids,
+        save_model_paths,
+        save_weights,
+        save_biases,
+        save_local_vocab_sizes,
+        save_l2u_maps,
+        save_u2l_pairs,
+        save_u2l_counts,
+        l2u_path_ptrs,
+        u2l_path_ptrs,
+        unified_size
+    );
+
+    for (size_t i = 0; i < 2; ++i) {
+        free(save_u2l_pairs_buf[i]);
+    }
+
+    if (save_rc != 0) {
+        fprintf(stderr, "ERROR: Failed to save aligned composite via API\n");
+        psam_composite_aligned_destroy(composite);
+        psam_destroy(hamlet);
+        psam_destroy(macbeth);
+        return 1;
+    }
+
+    psam_composite_aligned_t* reloaded = psam_composite_load_aligned("test_output/aligned_unit.psamc", false);
+    if (!reloaded) {
+        fprintf(stderr, "ERROR: Failed to reload aligned composite\n");
+        psam_composite_aligned_destroy(composite);
+        psam_destroy(hamlet);
+        psam_destroy(macbeth);
+        return 1;
+    }
+
+    psam_prediction_t preds_reload[10];
+    int num_preds_reload = psam_composite_aligned_predict(reloaded, context, valid_tokens, preds_reload, 10);
+    if (num_preds_reload <= 0) {
+        fprintf(stderr, "ERROR: Reloaded composite produced no predictions\n");
+        psam_composite_aligned_destroy(reloaded);
+        psam_composite_aligned_destroy(composite);
+        psam_destroy(hamlet);
+        psam_destroy(macbeth);
+        return 1;
+    }
+    printf("\n  Reloaded composite predictions: %d items\n", num_preds_reload);
+    psam_composite_aligned_destroy(reloaded);
 
     /* Cleanup */
     printf("\n✓ Test completed successfully!\n");

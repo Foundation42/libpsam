@@ -648,7 +648,8 @@ int psamc_save(
     const psamc_hyperparams_t* hyperparams,
     const psamc_manifest_t* manifest,
     const psamc_topology_t* topology,
-    const psam_alignment_info_t* alignment
+    const psam_alignment_info_t* alignment,
+    const psamc_sampler_defaults_t* sampler_overrides
 ) {
     (void)base_model; /* Placeholder for future embedded support */
 
@@ -772,7 +773,11 @@ int psamc_save(
 
     /* Write sampler defaults */
     psamc_sampler_defaults_t sampler_defaults;
-    init_sampler_defaults(&sampler_defaults);
+    if (sampler_overrides) {
+        sampler_defaults = *sampler_overrides;
+    } else {
+        init_sampler_defaults(&sampler_defaults);
+    }
     if (write_sampler_section(f, &sampler_defaults) != 0) {
         fclose(f);
         free(sections);
@@ -1317,7 +1322,10 @@ int psam_composite_save_file(
         snprintf(manifest.created_by, PSAMC_CREATED_BY_MAX, "libpsam");
     }
 
-    int rc = psamc_save(path, NULL, config, &manifest, &topology, NULL);
+    psamc_sampler_defaults_t sampler_defaults;
+    init_sampler_defaults(&sampler_defaults);
+
+    int rc = psamc_save(path, NULL, config, &manifest, &topology, NULL, &sampler_defaults);
 
     free(manifest.refs);
     free_topology(&topology);

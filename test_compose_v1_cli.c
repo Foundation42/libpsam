@@ -142,12 +142,20 @@ int main(void) {
 
     printf("  ✓ inspect reports psamc metadata\n");
 
+    printf("\nRunning predict with composite...\n");
+    rc = run_command("./build/psam predict --model test_output/tragedies_v1.psamc --ctx-ids 0,1,2 --top_k 5 > /dev/null");
+    if (rc != 0) {
+        fprintf(stderr, "❌ psam predict failed with exit code %d\n", rc);
+        return 1;
+    }
+    printf("  ✓ predict command succeeded\n");
+
     printf("\n🎉 V1 Aligned Composite CLI smoke test PASSED!\n");
     printf("\nGenerated files:\n");
     printf("  Composite: test_output/tragedies_v1.psamc\n");
     printf("  Maps: test_output/maps/*.{l2u.u32,u2l.pairs}\n");
     printf("\nNext: Try prediction with the composite:\n");
-    printf("  ./build/psam predict --composite test_output/tragedies_v1.psamc \\\n");
+    printf("  ./build/psam predict --model test_output/tragedies_v1.psamc \\\n");
     printf("    --prompt \"When shall we three meet again\" --top_k 10\n");
 
     return 0;

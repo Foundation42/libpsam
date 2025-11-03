@@ -537,7 +537,8 @@ static int compare_aligned_scores_desc(const void* a, const void* b) {
 psam_composite_aligned_t* psam_create_composite_aligned(
     psam_model_t* base,
     psam_vocab_alignment_t* alignment,
-    bool owns_alignment
+    bool owns_alignment,
+    bool owns_base
 ) {
     if (!base || !alignment) {
         fprintf(stderr, "ERROR: psam_create_composite_aligned requires base model and alignment\n");
@@ -569,7 +570,7 @@ psam_composite_aligned_t* psam_create_composite_aligned(
     aligned->coverage_rule = PSAM_COVER_NONE;
     aligned->base_model = base;
     aligned->base_weight = 1.0f;
-    aligned->owns_base_model = false;
+    aligned->owns_base_model = owns_base;
     aligned->layers = NULL;
     aligned->layer_count = 0;
     aligned->layer_capacity = 0;
@@ -599,25 +600,10 @@ int psam_composite_aligned_add_layer(
         return -1;
     }
 
-    /* Add layer to underlying composite
-     * Note: Layer ownership is handled by caller, not by aligned composite */
-    psam_error_t err = psam_composite_add_layer(
-        composite->composite,
-        layer_id,
-        model,
-        weight
-    );
-
-    if (err != PSAM_OK) {
-        fprintf(stderr, "ERROR: Failed to add layer '%s' to composite: %d\n", layer_id, err);
-        return -1;
-    }
-
     if (composite->layer_count == composite->layer_capacity) {
         size_t new_capacity = composite->layer_capacity ? composite->layer_capacity * 2 : 4;
         psam_aligned_layer_t* resized = realloc(composite->layers, new_capacity * sizeof(psam_aligned_layer_t));
         if (!resized) {
-            psam_composite_remove_layer(composite->composite, layer_id);
             fprintf(stderr, "ERROR: Failed to grow aligned layer list\n");
             return -1;
         }
@@ -629,7 +615,6 @@ int psam_composite_aligned_add_layer(
     memset(entry, 0, sizeof(*entry));
     entry->id = strdup(layer_id);
     if (!entry->id) {
-        psam_composite_remove_layer(composite->composite, layer_id);
         fprintf(stderr, "ERROR: Failed to allocate layer id string\n");
         return -1;
     }
@@ -643,7 +628,6 @@ int psam_composite_aligned_add_layer(
         fprintf(stderr, "ERROR: Alignment missing remap for layer '%s'\n", layer_id);
         free(entry->id);
         entry->id = NULL;
-        psam_composite_remove_layer(composite->composite, layer_id);
         return -1;
     }
     entry->alignment_index = alignment_index;
@@ -807,6 +791,65 @@ int psam_composite_aligned_predict(
     return (int)to_copy;
 }
 
+/* Forward declarations from infer.c for sampler transforms */
+extern void apply_logit_transform(float* logits, const float* scores, size_t n, psam_logit_transform_t transform);
+extern void apply_temperature_and_softmax(float* probs, float* logits, size_t n, float temperature);
+
+int psam_composite_aligned_predict_with_sampler(
+    psam_composite_aligned_t* composite,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    void* out_preds,
+    size_t max_preds
+) {
+    if (!composite || !out_preds) {
+        return PSAM_ERR_NULL_PARAM;
+    }
+
+    psam_prediction_t* preds = (psam_prediction_t*)out_preds;
+
+    int count = psam_composite_aligned_predict(composite, context, context_len, preds, max_preds);
+    if (count <= 0) {
+        return count;
+    }
+
+    psam_sampler_t fallback_sampler;
+    const psam_sampler_t* sampler_use = sampler;
+    if (!sampler_use) {
+        psam_composite_get_sampler_defaults(composite->composite, &fallback_sampler);
+        sampler_use = &fallback_sampler;
+    }
+
+    size_t n = (size_t)count;
+    float* scores = malloc(n * sizeof(float));
+    float* logits = malloc(n * sizeof(float));
+    float* probs = malloc(n * sizeof(float));
+    if (!scores || !logits || !probs) {
+        free(scores);
+        free(logits);
+        free(probs);
+        return PSAM_ERR_OUT_OF_MEMORY;
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        scores[i] = preds[i].score;
+    }
+
+    apply_logit_transform(logits, scores, n, sampler_use->transform);
+    apply_temperature_and_softmax(probs, logits, n, sampler_use->temperature);
+
+    for (size_t i = 0; i < n; ++i) {
+        preds[i].calibrated_prob = probs[i];
+    }
+
+    free(scores);
+    free(logits);
+    free(probs);
+
+    return count;
+}
+
 void psam_composite_aligned_destroy(psam_composite_aligned_t* composite) {
     if (!composite) return;
 
@@ -896,14 +939,6 @@ int psam_composite_aligned_update_layer_weight(
     if (!layer) {
         return -1;
     }
-    psam_error_t err = psam_composite_update_layer_weight(
-        composite->composite,
-        layer_id,
-        new_weight
-    );
-    if (err != PSAM_OK) {
-        return -1;
-    }
     layer->weight = new_weight;
     return 0;
 }
@@ -918,14 +953,6 @@ int psam_composite_aligned_update_layer_bias(
     }
     psam_aligned_layer_t* layer = find_aligned_layer(composite, layer_id);
     if (!layer) {
-        return -1;
-    }
-    psam_error_t err = psam_composite_update_layer_bias(
-        composite->composite,
-        layer_id,
-        new_bias
-    );
-    if (err != PSAM_OK) {
         return -1;
     }
     layer->bias = new_bias;

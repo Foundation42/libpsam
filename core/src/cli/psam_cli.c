@@ -59,10 +59,47 @@ typedef struct {
 
 typedef struct {
     char** id_to_token;
-    size_t size;
-    vocab_entry_t* entries;
-    size_t entry_count;
+   size_t size;
+   vocab_entry_t* entries;
+   size_t entry_count;
 } vocab_t;
+
+typedef struct {
+    psam_composite_t* layered;
+    psam_composite_aligned_t* aligned;
+} cli_composite_handle_t;
+
+static void cli_composite_handle_destroy(cli_composite_handle_t* handle) {
+    if (!handle) {
+        return;
+    }
+    if (handle->aligned) {
+        psam_composite_aligned_destroy(handle->aligned);
+        handle->aligned = NULL;
+    }
+    if (handle->layered) {
+        psam_composite_destroy(handle->layered);
+        handle->layered = NULL;
+    }
+}
+
+static cli_composite_handle_t cli_composite_handle_load(const char* path, bool verify_integrity) {
+    cli_composite_handle_t handle = {0};
+    handle.aligned = psam_composite_load_aligned(path, verify_integrity);
+    if (handle.aligned) {
+        return handle;
+    }
+    handle.layered = psam_composite_load_file(path, verify_integrity);
+    return handle;
+}
+
+static bool cli_composite_handle_is_aligned(const cli_composite_handle_t* handle) {
+    return handle && handle->aligned != NULL;
+}
+
+static bool cli_composite_handle_is_empty(const cli_composite_handle_t* handle) {
+    return !handle || (!handle->aligned && !handle->layered);
+}
 
 static void print_error(const char* fmt, ...) {
     va_list args;
@@ -1057,11 +1094,11 @@ static int generate_command(int argc, char** argv) {
     /* Check if composite or regular model */
     bool is_composite = has_suffix(opts.model_path, ".psamc");
     psam_model_t* model = NULL;
-    psam_composite_t* composite = NULL;
+    cli_composite_handle_t composite_handle = (cli_composite_handle_t){0};
 
     if (is_composite) {
-        composite = psam_composite_load_file(opts.model_path, false);
-        if (!composite) {
+        composite_handle = cli_composite_handle_load(opts.model_path, false);
+        if (cli_composite_handle_is_empty(&composite_handle)) {
             print_error("failed to load composite model '%s'", opts.model_path);
             vocab_free(&vocab);
             u32_list_free(&context);
@@ -1082,7 +1119,7 @@ static int generate_command(int argc, char** argv) {
     psam_prediction_t* preds = calloc(predict_cap, sizeof(psam_prediction_t));
     if (!preds) {
         if (model) psam_destroy(model);
-        if (composite) psam_composite_destroy(composite);
+        cli_composite_handle_destroy(&composite_handle);
         vocab_free(&vocab);
         u32_list_free(&context);
         return EXIT_INTERNAL;
@@ -1107,7 +1144,25 @@ static int generate_command(int argc, char** argv) {
         sampler.seed = rng_state;  /* Update seed for each step */
         int num_preds;
         if (is_composite) {
-            num_preds = psam_composite_predict_with_sampler(composite, context.data, context.size, &sampler, preds, predict_cap);
+            if (cli_composite_handle_is_aligned(&composite_handle)) {
+                num_preds = psam_composite_aligned_predict_with_sampler(
+                    composite_handle.aligned,
+                    context.data,
+                    context.size,
+                    &sampler,
+                    preds,
+                    predict_cap
+                );
+            } else {
+                num_preds = psam_composite_predict_with_sampler(
+                    composite_handle.layered,
+                    context.data,
+                    context.size,
+                    &sampler,
+                    preds,
+                    predict_cap
+                );
+            }
         } else {
             num_preds = psam_predict_with_sampler(model, context.data, context.size, &sampler, preds, predict_cap);
         }
@@ -1143,7 +1198,7 @@ static int generate_command(int argc, char** argv) {
 
     free(preds);
     if (model) psam_destroy(model);
-    if (composite) psam_composite_destroy(composite);
+    cli_composite_handle_destroy(&composite_handle);
 
     if (opts.quiet) {
         printf("\n");
@@ -1303,11 +1358,11 @@ static int predict_command(int argc, char** argv) {
     /* Check if composite or regular model */
     bool is_composite = has_suffix(opts.model_path, ".psamc");
     psam_model_t* model = NULL;
-    psam_composite_t* composite = NULL;
+    cli_composite_handle_t composite_handle = (cli_composite_handle_t){0};
 
     if (is_composite) {
-        composite = psam_composite_load_file(opts.model_path, false);
-        if (!composite) {
+        composite_handle = cli_composite_handle_load(opts.model_path, false);
+        if (cli_composite_handle_is_empty(&composite_handle)) {
             print_error("failed to load composite model '%s'", opts.model_path);
             vocab_free(&vocab);
             u32_list_free(&context);
@@ -1326,7 +1381,7 @@ static int predict_command(int argc, char** argv) {
     if (context.size == 0) {
         print_error("empty context");
         if (model) psam_destroy(model);
-        if (composite) psam_composite_destroy(composite);
+        cli_composite_handle_destroy(&composite_handle);
         vocab_free(&vocab);
         u32_list_free(&context);
         return EXIT_BAD_ARGS;
@@ -1336,7 +1391,7 @@ static int predict_command(int argc, char** argv) {
     psam_prediction_t* preds = calloc(predict_count, sizeof(psam_prediction_t));
     if (!preds) {
         if (model) psam_destroy(model);
-        if (composite) psam_composite_destroy(composite);
+        cli_composite_handle_destroy(&composite_handle);
         vocab_free(&vocab);
         u32_list_free(&context);
         return EXIT_INTERNAL;
@@ -1353,7 +1408,25 @@ static int predict_command(int argc, char** argv) {
 
     int num_preds;
     if (is_composite) {
-        num_preds = psam_composite_predict_with_sampler(composite, context.data, context.size, &sampler, preds, predict_count);
+        if (cli_composite_handle_is_aligned(&composite_handle)) {
+            num_preds = psam_composite_aligned_predict_with_sampler(
+                composite_handle.aligned,
+                context.data,
+                context.size,
+                &sampler,
+                preds,
+                predict_count
+            );
+        } else {
+            num_preds = psam_composite_predict_with_sampler(
+                composite_handle.layered,
+                context.data,
+                context.size,
+                &sampler,
+                preds,
+                predict_count
+            );
+        }
     } else {
         num_preds = psam_predict_with_sampler(model, context.data, context.size, &sampler, preds, predict_count);
     }
@@ -1361,7 +1434,7 @@ static int predict_command(int argc, char** argv) {
         print_error("predict failed (%d)", num_preds);
         free(preds);
         if (model) psam_destroy(model);
-        if (composite) psam_composite_destroy(composite);
+        cli_composite_handle_destroy(&composite_handle);
         vocab_free(&vocab);
         u32_list_free(&context);
         return EXIT_INTERNAL;
@@ -1406,7 +1479,7 @@ static int predict_command(int argc, char** argv) {
 
     free(preds);
     if (model) psam_destroy(model);
-    if (composite) psam_composite_destroy(composite);
+    cli_composite_handle_destroy(&composite_handle);
     vocab_free(&vocab);
     u32_list_free(&context);
     return EXIT_OK;
@@ -2272,7 +2345,7 @@ static int compose_command(int argc, char** argv) {
             printf("       model: %s\n", layers.data[i].path);
             printf("       vocab: %s\n", layers.data[i].vocab_path);
         }
-        printf("\nTry:\n  psam predict --composite %s --prompt \"test\" --top_k 10\n", out_path);
+        printf("\nTry:\n  psam predict --model %s --prompt \"test\" --top_k 10\n", out_path);
         goto cleanup_ok;
     }
 

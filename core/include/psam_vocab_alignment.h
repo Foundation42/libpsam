@@ -45,6 +45,7 @@
 #include <stddef.h>
 
 #include "psam_export.h"
+#include "psam.h"
 
 /* Forward declarations */
 typedef struct psam_model psam_model_t;
@@ -193,12 +194,14 @@ PSAM_API void psam_vocab_alignment_destroy(psam_vocab_alignment_t* alignment);
  * @param base          Base model (must match alignment's base layer)
  * @param alignment     Pre-built vocabulary alignment
  * @param owns_alignment Whether composite takes ownership of alignment
+ * @param owns_base      Whether composite takes ownership of base model
  * @return Aligned composite, or NULL on error
  */
 PSAM_API psam_composite_aligned_t* psam_create_composite_aligned(
     psam_model_t* base,
     psam_vocab_alignment_t* alignment,
-    bool owns_alignment
+    bool owns_alignment,
+    bool owns_base
 );
 
 /**
@@ -237,6 +240,15 @@ PSAM_API int psam_composite_aligned_predict(
     const uint32_t* context,
     size_t context_len,
     void* out_preds,  /* psam_prediction_t* but avoiding circular include */
+    size_t max_preds
+);
+
+PSAM_API int psam_composite_aligned_predict_with_sampler(
+    psam_composite_aligned_t* composite,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    void* out_preds,  /* psam_prediction_t* */
     size_t max_preds
 );
 
@@ -285,6 +297,11 @@ PSAM_API int psam_composite_aligned_update_layer_bias(
     psam_composite_aligned_t* composite,
     const char* layer_id,
     float new_bias
+);
+
+PSAM_API psam_composite_aligned_t* psam_composite_load_aligned(
+    const char* path,
+    bool verify_integrity
 );
 
 /* Debug/introspection helpers */

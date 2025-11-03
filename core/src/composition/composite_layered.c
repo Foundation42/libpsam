@@ -395,7 +395,17 @@ psam_composite_t* psam_composite_load_file(const char* path, bool verify_integri
             return NULL;
         }
         fprintf(stderr, "DEBUG: layer %u added successfully\n", i);
+        psam_composite_update_layer_bias(composite, layer_id, entry->bias);
     }
+
+    psam_sampler_t sampler_defaults = {
+        .transform = spec->sampler_defaults.logit_transform,
+        .temperature = spec->sampler_defaults.temperature,
+        .top_k = spec->sampler_defaults.top_k,
+        .top_p = spec->sampler_defaults.top_p,
+        .seed = spec->sampler_defaults.seed
+    };
+    psam_composite_set_sampler_defaults(composite, &sampler_defaults);
 
     fprintf(stderr, "DEBUG: psam_composite_load_file - all layers loaded, returning composite\n");
     psamc_free(spec);
@@ -591,4 +601,24 @@ int psam_composite_predict_with_sampler(
     free(probs);
 
     return count;
+}
+
+void psam_composite_set_sampler_defaults(
+    psam_composite_t* composite,
+    const psam_sampler_t* sampler
+) {
+    if (!composite || !sampler) {
+        return;
+    }
+    composite->sampler_defaults = *sampler;
+}
+
+void psam_composite_get_sampler_defaults(
+    const psam_composite_t* composite,
+    psam_sampler_t* out_sampler
+) {
+    if (!composite || !out_sampler) {
+        return;
+    }
+    *out_sampler = composite->sampler_defaults;
 }

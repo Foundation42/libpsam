@@ -534,6 +534,16 @@ PSAM_API int psam_composite_predict_with_sampler(
     size_t max_preds
 );
 
+PSAM_API void psam_composite_set_sampler_defaults(
+    psam_composite_t* composite,
+    const psam_sampler_t* sampler
+);
+
+PSAM_API void psam_composite_get_sampler_defaults(
+    const psam_composite_t* composite,
+    psam_sampler_t* out_sampler
+);
+
 /**
  * Update the bias for a specific layer in the composite.
  *

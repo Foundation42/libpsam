@@ -350,7 +350,8 @@ PSAM_API int psamc_save(
     const psamc_hyperparams_t* hyperparams,
     const psamc_manifest_t* manifest,
     const psamc_topology_t* topology,
-    const psam_alignment_info_t* alignment
+    const psam_alignment_info_t* alignment,
+    const psamc_sampler_defaults_t* sampler_defaults
 );
 
 /**
