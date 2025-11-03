@@ -9,6 +9,7 @@
 #include "psam.h"
 #include "psam_composite.h"
 #include "psam_vocab_alignment.h"
+#include "psam_export.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -1839,7 +1840,7 @@ static void layer_list_free(layer_list_t* list) {
     list->size = list->capacity = 0;
 }
 
-static int layer_list_append(layer_list_t* list, const char* path, const char* version) __attribute__((unused));
+static int layer_list_append(layer_list_t* list, const char* path, const char* version) PSAM_UNUSED;
 static int layer_list_append(layer_list_t* list, const char* path, const char* version) {
     if (list->size == list->capacity) {
         size_t new_cap = list->capacity ? list->capacity * 2 : 4;
@@ -1943,7 +1944,7 @@ static char* derive_layer_id(const char* path, size_t index) {
 }
 
 /* Helper: Ensure directory exists, create if needed */
-static int ensure_dir(const char* path) __attribute__((unused));
+static int ensure_dir(const char* path) PSAM_UNUSED;
 static int ensure_dir(const char* path) {
     struct stat st;
     if (stat(path, &st) == 0) {
@@ -1959,10 +1960,10 @@ static int ensure_dir(const char* path) {
 static int compose_command(int argc, char** argv) {
     const char* out_path = NULL;
     const char* created_by = NULL;
-    const char* unified_vocab_path __attribute__((unused)) = NULL;
-    const char* unknown_policy_str __attribute__((unused)) = "unk";
-    const char* coverage_weight_str __attribute__((unused)) = "none";
-    bool force __attribute__((unused)) = false;
+    const char* unified_vocab_path = NULL;
+    const char* unknown_policy_str = "unk";
+    const char* coverage_weight_str = "none";
+    bool force PSAM_UNUSED = false;
     bool v1_mode = false;  /* Detect v1 if --vocab is used */
 
     /* V1 aligned composite state */
@@ -1973,14 +1974,14 @@ static int compose_command(int argc, char** argv) {
     float pending_bias = 0.0f;
 
     /* Sampler defaults */
-    psamc_sampler_defaults_t sampler __attribute__((unused)) = {
+    psamc_sampler_defaults_t sampler = {
         .logit_transform = PSAM_LOGIT_ZSCORE,
         .temperature = 1.0f,
         .top_k = 50,
         .top_p = 0.95f,
         .seed = 42
     };
-    bool sampler_save __attribute__((unused)) = false;
+    bool sampler_save = false;
 
     /* Legacy state */
     psamc_hyperparams_t hyper = PSAMC_PRESET_BALANCED_CONFIG;

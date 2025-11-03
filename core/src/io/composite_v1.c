@@ -10,6 +10,7 @@
 #include "../../include/psam_composite.h"
 #include "../../include/psam_vocab_alignment.h"
 #include "../../include/psam.h"
+#include "../../include/psam_export.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -83,7 +84,7 @@ static int write_u2l_map(const char* path, const uint32_t* pairs, uint32_t pair_
 /**
  * Read local-to-unified dense map (*.l2u.u32)
  */
-static uint32_t* read_l2u_map(const char* path, uint32_t expected_size, uint32_t* out_size) __attribute__((unused));
+static uint32_t* read_l2u_map(const char* path, uint32_t expected_size, uint32_t* out_size) PSAM_UNUSED;
 static uint32_t* read_l2u_map(const char* path, uint32_t expected_size, uint32_t* out_size) {
     FILE* f = fopen(path, "rb");
     if (!f) {
@@ -125,7 +126,7 @@ static uint32_t* read_l2u_map(const char* path, uint32_t expected_size, uint32_t
 /**
  * Read unified-to-local sparse map (*.u2l.pairs)
  */
-static uint32_t* read_u2l_map(const char* path, uint32_t* out_pair_count) __attribute__((unused));
+static uint32_t* read_u2l_map(const char* path, uint32_t* out_pair_count) PSAM_UNUSED;
 static uint32_t* read_u2l_map(const char* path, uint32_t* out_pair_count) {
     FILE* f = fopen(path, "rb");
     if (!f) {
