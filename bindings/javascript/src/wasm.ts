@@ -14,6 +14,7 @@ interface EmscriptenModule {
   HEAPU32: Uint32Array;
   HEAP32: Int32Array;
   HEAPF32: Float32Array;
+  HEAPU16: Uint16Array;
   HEAPU8: Uint8Array;
   cwrap: (name: string, returnType: string | null, argTypes: string[]) => Function;
   ccall: (name: string, returnType: string | null, argTypes: string[], args: any[]) => any;
