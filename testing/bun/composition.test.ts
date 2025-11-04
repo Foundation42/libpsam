@@ -116,6 +116,17 @@ function buildDistribution(
   return mass;
 }
 
+// Deterministic RNG for tests (Mulberry32)
+function mulberry32(seed: number): () => number {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 function expectDistribution(mass: Map<string, number>, expected: Record<string, number>, tolerance = 20): void {
   for (const [vocab, target] of Object.entries(expected)) {
     const actual = mass.get(vocab) ?? 0;
@@ -365,8 +376,9 @@ describe('PSAM composition (Bun bindings)', () => {
     // Create truly random sequence (no patterns)
     const allTokens = Array.from(testVocab.tokenToId.keys());
     const randomSeq: number[] = [];
+    const rng = mulberry32(0x9999);
     for (let i = 0; i < length; i++) {
-      const randomToken = allTokens[Math.floor(Math.random() * allTokens.length)];
+      const randomToken = allTokens[Math.floor(rng() * allTokens.length)];
       randomSeq.push(testVocab.tokenToId.get(randomToken)!);
     }
 
