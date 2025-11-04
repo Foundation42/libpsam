@@ -694,9 +694,8 @@ const PSAMWasmDemo = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="bg-white rounded-lg shadow-lg p-8 mb-6">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-8">
+      <div className="bg-white rounded-lg shadow-lg p-4 md:p-8 mb-6">
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-3xl font-bold text-gray-800">PSAM WASM Demo</h1>
             <div className="flex items-center gap-2 bg-green-100 px-3 py-1 rounded-full">
@@ -941,31 +940,6 @@ const PSAMWasmDemo = () => {
                 />
               </div>
 
-              {/* Sampling Parameters */}
-              <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
-                <h4 className="font-medium text-gray-800 mb-3">Sampling Parameters</h4>
-                <div className="grid grid-cols-1 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">
-                      Temperature
-                      <span className="ml-1 text-gray-500">(affects stochastic mode only)</span>
-                    </label>
-                    <input
-                      type="number"
-                      value={temperature}
-                      onChange={(e) => setTemperature(Math.max(0.1, parseFloat(e.target.value)))}
-                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
-                      step="0.1"
-                      min="0.1"
-                      max="10"
-                    />
-                    <div className="text-xs text-gray-500 mt-1">
-                      Lower = more focused, Higher = more diverse
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               {/* Action Buttons */}
               <div className="flex gap-3 mb-6">
                 <button
@@ -1021,7 +995,7 @@ const PSAMWasmDemo = () => {
 
               {/* Dual Predictions - Greedy vs Stochastic */}
               {predictions.length > 0 && (
-                <div className="grid grid-cols-2 gap-4 mb-4">
+                <div className="grid grid-cols-1 gap-4 mb-4">
                   {/* Greedy Panel */}
                   <div
                     onClick={() => setSamplingMode('greedy')}
@@ -1103,8 +1077,28 @@ const PSAMWasmDemo = () => {
                       )}
                     </div>
                     <div className="text-xs text-gray-600 mb-3">
-                      100 samples from distribution (temperature matters!)
+                      100 samples from distribution
                     </div>
+
+                    {/* Temperature Control */}
+                    <div className="mb-3 p-3 bg-white rounded border border-purple-200" onClick={(e) => e.stopPropagation()}>
+                      <label className="block text-xs font-medium text-gray-700 mb-1">
+                        Temperature
+                      </label>
+                      <input
+                        type="number"
+                        value={temperature}
+                        onChange={(e) => setTemperature(Math.max(0.1, parseFloat(e.target.value)))}
+                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                        step="0.1"
+                        min="0.1"
+                        max="10"
+                      />
+                      <div className="text-xs text-gray-500 mt-1">
+                        Lower = focused, Higher = diverse
+                      </div>
+                    </div>
+
                     <div className="space-y-2">
                       {stochasticSamples.length > 0 ? (
                         stochasticSamples.map((sample, i) => (
@@ -1216,7 +1210,6 @@ const PSAMWasmDemo = () => {
             </div>
           )}
         </div>
-      </div>
     </div>
   );
 };
