@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, Iterable, List
+import re
 
 import pytest
 
@@ -388,4 +389,56 @@ def test_uniform_baseline(sampler: SamplerConfig):
         finally:
             composite.destroy()
     finally:
+        model.destroy()
+
+
+def test_consensus_prefers_multi_support(sampler: SamplerConfig):
+    """Ensure consensus weighting promotes multi-support continuations."""
+    if not is_library_available():
+        pytest.skip("libpsam native library not available")
+
+    story = (
+        "once upon a time in a small village, there lived a curious young girl named luna. "
+        "luna loved to explore the forest near her home. one sunny morning, luna decided to venture "
+        "deeper into the woods than ever before. she discovered a hidden clearing where magical "
+        "butterflies danced in the golden sunlight. the butterflies led her to an ancient oak tree "
+        "with a door carved into its trunk. luna opened the door and found a library filled with "
+        "books that whispered secrets of the forest. from that day on, the butterflies brought luna "
+        "a special gift, a silver key that unlocked a hidden chamber deep within the oak tree."
+    ).lower()
+
+    tokens = re.findall(r"\w+|[.,!?;]", story)
+    token_to_id = {token: idx for idx, token in enumerate(dict.fromkeys(tokens))}
+    id_to_token = {idx: token for token, idx in token_to_id.items()}
+    sequence = [token_to_id[token] for token in tokens]
+
+    model = train_model(sequence, len(token_to_id))
+    composite = model.create_layered_composite()
+
+    try:
+        composite.set_base_weight(1.0)
+        context_ids = [token_to_id[word] for word in ["once", "upon", "a"]]
+
+        ids, scores, raw_strengths, support_counts, probabilities = composite.predict(
+            context_ids, max_predictions=12, sampler=sampler
+        )
+
+        id_list = list(ids)
+        top_token = id_to_token[id_list[0]]
+        assert top_token == "time", f"Expected consensus continuation 'time', got {top_token}"
+
+        def find_index(word: str) -> int:
+            token_id = token_to_id[word]
+            assert token_id in id_list, f"{word} missing from predictions"
+            return id_list.index(token_id)
+
+        time_idx = find_index("time")
+        special_idx = find_index("special")
+
+        assert support_counts[time_idx] >= 2, "Expected 'time' to accumulate multiple supports"
+        assert support_counts[special_idx] == 1, "'special' should remain single-support"
+        assert scores[time_idx] > scores[special_idx], "Consensus score should outrank unigram continuation"
+        assert probabilities[time_idx] > probabilities[special_idx], "Sampler probability should reflect consensus preference"
+    finally:
+        composite.destroy()
         model.destroy()
