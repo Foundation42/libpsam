@@ -1,6 +1,54 @@
 import { useState, useEffect } from 'react';
 import { Play, Zap, Info, RefreshCw, Settings } from 'lucide-react';
 
+declare global {
+  interface Window {
+    createPSAMModule?: any;
+    PSAM_WASM_PATH?: string;
+  }
+}
+
+function normalizePath(path: string): string {
+  return path.endsWith('/') ? path.slice(0, -1) : path;
+}
+
+function resolveWasmDir(): string {
+  if (typeof window !== 'undefined' && window.PSAM_WASM_PATH) {
+    return normalizePath(window.PSAM_WASM_PATH);
+  }
+  const base = (import.meta as any).env?.BASE_URL ?? '/';
+  return normalizePath(base) + '/wasm';
+}
+
+async function ensureWasmModuleLoaded(): Promise<void> {
+  if (typeof window === 'undefined' || window.createPSAMModule) {
+    return;
+  }
+
+  const src = `${resolveWasmDir()}/psam.js`;
+
+  await new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector(`script[data-psam-wasm="${src}"]`) as HTMLScriptElement | null;
+    if (existing) {
+      if (window.createPSAMModule) {
+        resolve();
+        return;
+      }
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error(`Failed to load ${src}`)), { once: true });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.dataset.psamWasm = src;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+
 // Import WASM bindings (loaded via script tag in index.html)
 interface PSAMInstance {
   trainBatch(tokens: number[]): void;
@@ -187,24 +235,16 @@ const PSAMWasmDemo = () => {
         setLoading(true);
         setError(null);
 
-        // Wait for createPSAMModule to be available
-        let retries = 0;
-        while (!(window as any).createPSAMModule && retries < 50) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-          retries++;
-        }
+        await ensureWasmModuleLoaded();
 
         if (!(window as any).createPSAMModule) {
-          throw new Error('WASM module not loaded. Make sure psam.js is included in index.html');
+          throw new Error('PSAM WASM module script failed to load');
         }
 
-        // Initialize the WASM module
         const Module = await (window as any).createPSAMModule({
           locateFile: (path: string) => {
-            if (path.endsWith('.wasm')) {
-              return './wasm/' + path;
-            }
-            return path;
+            const baseDir = resolveWasmDir();
+            return path.endsWith('.wasm') ? `${baseDir}/${path}` : path;
           }
         });
 
