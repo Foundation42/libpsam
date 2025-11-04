@@ -3,6 +3,7 @@
  */
 
 #include "psam_vocab_alignment.h"
+#include "../psam_internal.h"
 #include "psam.h"
 #include <stdlib.h>
 #include <string.h>
@@ -785,6 +786,16 @@ int psam_composite_aligned_predict(
         free(scratch);
         free(accum);
         return 0;
+    }
+
+    for (size_t i = 0; i < accum_size; ++i) {
+        float raw = accum[i].raw_strength;
+        float bias_component = accum[i].score - raw;
+        float contextual = raw;
+        if (accum[i].support_count > 1) {
+            contextual *= 1.0f + PSAM_CONSENSUS_GAIN * (float)(accum[i].support_count - 1);
+        }
+        accum[i].score = bias_component + contextual;
     }
 
     qsort(accum, accum_size, sizeof(aligned_score_t), compare_aligned_scores_desc);

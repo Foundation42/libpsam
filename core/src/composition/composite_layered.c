@@ -517,6 +517,16 @@ int psam_composite_predict(
         goto cleanup;
     }
 
+    for (size_t i = 0; i < accum_size; ++i) {
+        float raw = accum[i].raw_strength;
+        float bias_component = accum[i].score - raw;
+        float contextual = raw;
+        if (accum[i].support_count > 1) {
+            contextual *= 1.0f + PSAM_CONSENSUS_GAIN * (float)(accum[i].support_count - 1);
+        }
+        accum[i].score = bias_component + contextual;
+    }
+
     qsort(accum, accum_size, sizeof(composite_score_t), compare_scores_desc);
 
     size_t to_copy = accum_size < max_preds ? accum_size : max_preds;

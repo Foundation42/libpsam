@@ -11,6 +11,8 @@
 #include "psam.h"
 #include <stdbool.h>
 
+#define PSAM_CONSENSUS_GAIN 0.5f
+
 /* Platform-specific read-write lock */
 #ifdef _WIN32
     #include <windows.h>

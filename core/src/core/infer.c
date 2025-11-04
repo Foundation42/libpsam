@@ -165,11 +165,19 @@ int psam_predict(
 
     for (uint32_t i = 0; i < vocab_size; i++) {
         all_preds[i].token = i;
-        all_preds[i].score = scores[i];
-        all_preds[i].raw_strength = raw_strength[i];
+        float raw = raw_strength[i];
+        float bias_component = scores[i] - raw;
+        float contextual = raw;
+        if (support_counts[i] > 1) {
+            contextual *= 1.0f + PSAM_CONSENSUS_GAIN * (float)(support_counts[i] - 1);
+        }
+        float final_score = bias_component + contextual;
+        all_preds[i].score = final_score;
+        all_preds[i].raw_strength = raw;
         all_preds[i].support_count = support_counts[i];
         all_preds[i]._reserved = 0;
         all_preds[i].calibrated_prob = 0.0f;  /* TODO: Implement calibration */
+        scores[i] = final_score;
     }
 
     /* 4. Sort by score (descending) */
