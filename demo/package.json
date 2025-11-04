@@ -4,14 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "wasm:sync": "node scripts/sync-wasm.cjs",
+    "predev": "npm run wasm:sync",
+    "prebuild": "npm run wasm:sync",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
+    "lucide-react": "^0.263.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "lucide-react": "^0.263.1"
+    "tar": "^6.2.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

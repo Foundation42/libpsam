@@ -39,15 +39,6 @@ jobs:
           cache: 'npm'
           cache-dependency-path: demo/package-lock.json
 
-      - name: Download latest WASM release
-        run: |
-          curl -L -o /tmp/libpsam-wasm.tar.gz \
-            "https://github.com/Foundation42/libpsam/releases/download/latest/libpsam-wasm.tar.gz"
-          mkdir -p demo/public/wasm
-          tar -xzf /tmp/libpsam-wasm.tar.gz -C /tmp
-          cp /tmp/libpsam-wasm/* demo/public/wasm/
-          ls -lh demo/public/wasm/
-
       - name: Install dependencies
         run: |
           cd demo

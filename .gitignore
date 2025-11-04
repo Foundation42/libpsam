@@ -22,6 +22,11 @@ node_modules/
 
 # Demo build
 demo/dist/
+demo/public/wasm/psam.js
+demo/public/wasm/psam.wasm
+demo/public/wasm/psam-bindings.js
+demo/public/wasm/psam-bindings.d.ts
+demo/public/wasm/types.d.ts
 
 # Python
 __pycache__/

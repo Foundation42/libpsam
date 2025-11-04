@@ -26,15 +26,18 @@ npm install
 # or
 bun install
 
+# Sync WASM assets (copies from bindings/wasm/build or downloads the latest release)
+npm run wasm:sync
+# or
+bun run wasm:sync
+
 # Start development server
 npm run dev
-# or
-bun run dev
+# (Bun users: run `bun run wasm:sync` first, then `bun run dev`)
 
 # Build for production
 npm run build
-# or
-bun run build
+# (Bun users: run `bun run wasm:sync` first, then `bun run build`)
 ```
 
 ## How to Use
