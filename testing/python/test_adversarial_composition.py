@@ -224,7 +224,7 @@ def discover_adversarial_contexts(
         for i in range(len(corpus_tokens) - window):
             context = corpus_tokens[i:i + window]
 
-            _, _, probs = composite.predict(context, max_predictions=32, sampler=sampler)
+            _, _, _, _, probs = composite.predict(context, max_predictions=32, sampler=sampler)
 
             if probs is not None and len(probs) > 0:
                 h = entropy(list(probs))
@@ -323,8 +323,8 @@ def test_adversarial_pattern_learning(synthetic_corpus, sampler: SamplerConfig):
             comp_target.set_base_weight(1.0)
             comp_adv.set_base_weight(1.0)
 
-            ids_target, _, probs_target = comp_target.predict(normal_context, max_predictions=10, sampler=sampler)
-            ids_adv, _, probs_adv = comp_adv.predict(normal_context, max_predictions=10, sampler=sampler)
+            ids_target, _, _, _, probs_target = comp_target.predict(normal_context, max_predictions=10, sampler=sampler)
+            ids_adv, _, _, _, probs_adv = comp_adv.predict(normal_context, max_predictions=10, sampler=sampler)
 
             if probs_target is not None and probs_adv is not None and len(probs_target) > 0 and len(probs_adv) > 0:
                 # Align probability distributions (may have different top-k)
@@ -387,8 +387,8 @@ def test_robust_composition(synthetic_corpus, sampler: SamplerConfig):
             # "the the the the"
             adv_context = [token_to_id["the"]] * 4
 
-            ids_target, _, probs_target = target_comp.predict(adv_context, max_predictions=10, sampler=sampler)
-            ids_robust, _, probs_robust = robust_comp.predict(adv_context, max_predictions=10, sampler=sampler)
+            ids_target, _, _, _, probs_target = target_comp.predict(adv_context, max_predictions=10, sampler=sampler)
+            ids_robust, _, _, _, probs_robust = robust_comp.predict(adv_context, max_predictions=10, sampler=sampler)
 
             if probs_target is not None and probs_robust is not None:
                 h_target = entropy(list(probs_target))
@@ -452,8 +452,8 @@ def test_dynamic_threat_response(synthetic_corpus, sampler: SamplerConfig):
         high_threat.add_layer("adv", adversarial_model, 0.4)
 
         try:
-            ids_low, _, probs_low = low_threat.predict(test_context, max_predictions=10, sampler=sampler)
-            ids_high, _, probs_high = high_threat.predict(test_context, max_predictions=10, sampler=sampler)
+            ids_low, _, _, _, probs_low = low_threat.predict(test_context, max_predictions=10, sampler=sampler)
+            ids_high, _, _, _, probs_high = high_threat.predict(test_context, max_predictions=10, sampler=sampler)
 
             if probs_low is not None and probs_high is not None:
                 print(f"\nDynamic Threat Response:")

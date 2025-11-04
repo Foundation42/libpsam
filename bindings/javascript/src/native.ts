@@ -171,7 +171,7 @@ const moduleDir = typeof __dirname !== 'undefined' && __dirname
   : path.resolve(path.dirname(''));
 const repoRoot = path.resolve(moduleDir, '../../..');
 
-const PREDICTION_SIZE = 12; // sizeof(psam_prediction_t)
+const PREDICTION_SIZE = 20; // sizeof(psam_prediction_t)
 const STATS_SIZE = 32; // sizeof(psam_stats_t)
 const EXPLAIN_TERM_SIZE = 24; // sizeof(psam_explain_term_t)
 const EXPLAIN_RESULT_SIZE = 16; // sizeof(psam_explain_result_t)
@@ -468,6 +468,8 @@ export class PSAMNative implements TrainablePSAM {
 
     const ids: TokenId[] = [];
     const scores = new Float32Array(numPreds);
+    const rawStrengths = new Float32Array(numPreds);
+    const supportCounts = new Uint16Array(numPreds);
     const probabilities = new Float32Array(numPreds);
     const view = new DataView(outBuffer.buffer);
 
@@ -475,10 +477,12 @@ export class PSAMNative implements TrainablePSAM {
       const offset = i * PREDICTION_SIZE;
       ids.push(view.getUint32(offset, true));
       scores[i] = view.getFloat32(offset + 4, true);
-      probabilities[i] = view.getFloat32(offset + 8, true);
+      rawStrengths[i] = view.getFloat32(offset + 8, true);
+      supportCounts[i] = view.getUint16(offset + 12, true);
+      probabilities[i] = view.getFloat32(offset + 16, true);
     }
 
-    return { ids, scores, probabilities };
+    return { ids, scores, rawStrengths, supportCounts, probabilities };
   }
 
   explain(context: TokenId[], candidateToken: TokenId, maxTerms?: number): ExplainResult {
@@ -734,7 +738,13 @@ export class LayeredCompositeNative implements LayeredComposite {
 
   predict(context: TokenId[], maxPredictions: number = this.baseTopK, sampler?: SamplerConfig): InferenceResult {
     if (context.length === 0) {
-      return { ids: [], scores: new Float32Array() };
+      return {
+        ids: [],
+        scores: new Float32Array(),
+        rawStrengths: new Float32Array(),
+        supportCounts: new Uint16Array(),
+        probabilities: new Float32Array()
+      };
     }
 
     const outBuffer = new Uint8Array(maxPredictions * PREDICTION_SIZE);
@@ -764,11 +774,19 @@ export class LayeredCompositeNative implements LayeredComposite {
 
     if (count < 0) {
       checkError(count, 'composite_predict', this.lib);
-      return { ids: [], scores: new Float32Array() };
+      return {
+        ids: [],
+        scores: new Float32Array(),
+        rawStrengths: new Float32Array(),
+        supportCounts: new Uint16Array(),
+        probabilities: new Float32Array()
+      };
     }
 
     const ids: TokenId[] = [];
     const scores = new Float32Array(count);
+    const rawStrengths = new Float32Array(count);
+    const supportCounts = new Uint16Array(count);
     const probabilities = new Float32Array(count);
     const view = new DataView(outBuffer.buffer, outBuffer.byteOffset, outBuffer.byteLength);
 
@@ -776,10 +794,12 @@ export class LayeredCompositeNative implements LayeredComposite {
       const offset = i * PREDICTION_SIZE;
       ids.push(view.getUint32(offset, true));
       scores[i] = view.getFloat32(offset + 4, true);
-      probabilities[i] = view.getFloat32(offset + 8, true);
+      rawStrengths[i] = view.getFloat32(offset + 8, true);
+      supportCounts[i] = view.getUint16(offset + 12, true);
+      probabilities[i] = view.getFloat32(offset + 16, true);
     }
 
-    return { ids, scores, probabilities };
+    return { ids, scores, rawStrengths, supportCounts, probabilities };
   }
 
   sample(context: TokenId[], temperature: number = 1.0): TokenId {

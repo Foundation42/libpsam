@@ -118,7 +118,10 @@ typedef struct {
  */
 typedef struct {
     uint32_t token;           /* Predicted token ID */
-    float score;              /* Raw association score */
+    float score;              /* Total score: bias + raw_strength */
+    float raw_strength;       /* Sum of contextual contributions (bias excluded) */
+    uint16_t support_count;   /* Number of context contributions recorded */
+    uint16_t _reserved;       /* Padding for 4-byte alignment (future use) */
     float calibrated_prob;    /* Calibrated probability (0-1 range) */
 } psam_prediction_t;
 

@@ -73,6 +73,9 @@ class PSAMPrediction(ctypes.Structure):
     _fields_ = [
         ("token_id", ctypes.c_uint32),
         ("score", ctypes.c_float),
+        ("raw_strength", ctypes.c_float),
+        ("support_count", ctypes.c_uint16),
+        ("_reserved", ctypes.c_uint16),
         ("calibrated_prob", ctypes.c_float),
     ]
 
@@ -467,7 +470,7 @@ class PSAM:
 
     def predict(
         self, context: List[int], max_predictions: Optional[int] = None, sampler: Optional[SamplerConfig] = None
-    ) -> Tuple[List[int], np.ndarray, Optional[np.ndarray]]:
+    ) -> Tuple[List[int], np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """
         Generate predictions for a given context
 
@@ -477,7 +480,7 @@ class PSAM:
             sampler: Optional sampler configuration for temperature control
 
         Returns:
-            Tuple of (token_ids, scores, probabilities)
+            Tuple of (token_ids, scores, raw_strengths, support_counts, probabilities)
         """
         limit = max_predictions if max_predictions is not None else self._top_k
 
@@ -505,9 +508,14 @@ class PSAM:
 
         token_ids = [predictions[i].token_id for i in range(num_preds)]
         scores = np.array([predictions[i].score for i in range(num_preds)], dtype=np.float32)
-        probabilities = np.array([predictions[i].calibrated_prob for i in range(num_preds)], dtype=np.float32) if sampler else None
+        raw_strengths = np.array([predictions[i].raw_strength for i in range(num_preds)], dtype=np.float32)
+        support_counts = np.array([predictions[i].support_count for i in range(num_preds)], dtype=np.uint16)
+        probabilities = (
+            np.array([predictions[i].calibrated_prob for i in range(num_preds)], dtype=np.float32)
+            if sampler else None
+        )
 
-        return token_ids, scores, probabilities
+        return token_ids, scores, raw_strengths, support_counts, probabilities
 
     def explain(
         self, context: List[int], candidate_token: int, max_terms: Optional[int] = None
@@ -760,9 +768,20 @@ class LayeredComposite:
             layers.append(CompositeLayerInfo(layer_id=layer_id, weight=entry.weight, bias=entry.bias))
         return layers
 
-    def predict(self, context: List[int], max_predictions: Optional[int] = None, sampler: Optional[SamplerConfig] = None) -> Tuple[List[int], np.ndarray, Optional[np.ndarray]]:
+    def predict(
+        self,
+        context: List[int],
+        max_predictions: Optional[int] = None,
+        sampler: Optional[SamplerConfig] = None
+    ) -> Tuple[List[int], np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]:
         if not context:
-            return [], np.zeros(0, dtype=np.float32), None
+            return (
+                [],
+                np.zeros(0, dtype=np.float32),
+                np.zeros(0, dtype=np.float32),
+                np.zeros(0, dtype=np.uint16),
+                None,
+            )
 
         limit = max_predictions if max_predictions is not None else self._default_top_k
         predictions = (PSAMPrediction * limit)()
@@ -797,11 +816,16 @@ class LayeredComposite:
 
         token_ids = [predictions[i].token_id for i in range(count)]
         scores = np.array([predictions[i].score for i in range(count)], dtype=np.float32)
-        probabilities = np.array([predictions[i].calibrated_prob for i in range(count)], dtype=np.float32) if sampler else None
-        return token_ids, scores, probabilities
+        raw_strengths = np.array([predictions[i].raw_strength for i in range(count)], dtype=np.float32)
+        support_counts = np.array([predictions[i].support_count for i in range(count)], dtype=np.uint16)
+        probabilities = (
+            np.array([predictions[i].calibrated_prob for i in range(count)], dtype=np.float32)
+            if sampler else None
+        )
+        return token_ids, scores, raw_strengths, support_counts, probabilities
 
     def sample(self, context: List[int], temperature: float = 1.0) -> int:
-        token_ids, scores = self.predict(context, self._default_top_k)
+        token_ids, scores, *_ = self.predict(context, self._default_top_k)
         if not token_ids:
             raise PSAMError("No predictions available")
 

@@ -78,6 +78,7 @@ int psam_composite_predict(psam_composite_t* comp,
 ```javascript
 // Consistent JS API regardless of topology
 const predictions = compositeModel.predict(context, maxPredictions);
+// predictions now include scores, rawStrengths, supportCounts, probabilities arrays
 const saved = compositeModel.save('my-composition.psamc');  // Composite format
 ```
 

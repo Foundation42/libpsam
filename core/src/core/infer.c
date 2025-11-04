@@ -96,9 +96,14 @@ int psam_predict(
     const uint32_t vocab_size = model->config.vocab_size;
     int result = 0;
 
-    /* 1. Allocate score buffer and initialize with bias */
+    /* 1. Allocate buffers for scores and support metadata */
     float* scores = calloc(vocab_size, sizeof(float));
-    if (!scores) {
+    float* raw_strength = calloc(vocab_size, sizeof(float));
+    uint16_t* support_counts = calloc(vocab_size, sizeof(uint16_t));
+    if (!scores || !raw_strength || !support_counts) {
+        free(scores);
+        free(raw_strength);
+        free(support_counts);
         result = PSAM_ERR_OUT_OF_MEMORY;
         goto cleanup;
     }
@@ -125,19 +130,10 @@ int psam_predict(
                 continue;  /* Row not found */
             }
 
-            /* Compute IDF if enabled */
-            float idf = model->config.enable_idf ? compute_idf(model, token) : 1.0f;
-
-            /* Compute distance decay: exp(-alpha * offset) */
-            float distance_decay = expf(-model->config.alpha * (float)offset);
-
             /* Get row bounds from CSR */
             uint32_t row_start = model->csr->row_offsets[row_idx];
             uint32_t row_end = model->csr->row_offsets[row_idx + 1];
             float row_scale = model->csr->row_scales[row_idx];
-
-            /* Compute contribution factor */
-            float contribution = idf * distance_decay * row_scale;
 
             /* Accumulate scores for all targets in this row */
             for (uint32_t edge = row_start; edge < row_end; edge++) {
@@ -148,8 +144,13 @@ int psam_predict(
 
                 /* Weight is quantized int16, contribution includes row_scale for dequantization */
                 float weight = (float)model->csr->weights[edge];
+                float delta = row_scale * weight;
 
-                scores[target] += contribution * weight;
+                scores[target] += delta;
+                raw_strength[target] += delta;
+                if (delta != 0.0f && support_counts[target] < UINT16_MAX) {
+                    support_counts[target]++;
+                }
             }
         }
     }
@@ -165,6 +166,9 @@ int psam_predict(
     for (uint32_t i = 0; i < vocab_size; i++) {
         all_preds[i].token = i;
         all_preds[i].score = scores[i];
+        all_preds[i].raw_strength = raw_strength[i];
+        all_preds[i].support_count = support_counts[i];
+        all_preds[i]._reserved = 0;
         all_preds[i].calibrated_prob = 0.0f;  /* TODO: Implement calibration */
     }
 
@@ -181,6 +185,8 @@ int psam_predict(
 
 cleanup_scores:
     free(scores);
+    free(raw_strength);
+    free(support_counts);
 
 cleanup:
     psam_lock_unlock_rd(&model->lock);
@@ -529,8 +535,14 @@ psam_error_t psam_explain(
 
                 if (target == candidate_token) {
                     /* Found a contribution! */
-                    float weight_ppmi = (float)model->csr->weights[edge] * row_scale;
-                    float contribution = idf * distance_decay * weight_ppmi;
+                    float stored_weight = (float)model->csr->weights[edge] * row_scale;
+                    float denom = idf * distance_decay;
+                    float weight_ppmi = stored_weight;
+                    if (denom > 0.0f) {
+                        weight_ppmi = stored_weight / denom;
+                    }
+
+                    float contribution = stored_weight;
 
                     psam_explain_term_t term;
                     term.source_token = token;

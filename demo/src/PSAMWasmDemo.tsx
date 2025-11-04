@@ -5,7 +5,17 @@ import { Play, Zap, Info, RefreshCw, Settings } from 'lucide-react';
 interface PSAMInstance {
   trainBatch(tokens: number[]): void;
   finalizeTraining(): void;
-  predict(context: number[], maxPredictions?: number, temperature?: number): { ids: number[]; scores: Float32Array; probabilities: Float32Array };
+  predict(
+    context: number[],
+    maxPredictions?: number,
+    temperature?: number
+  ): {
+    ids: number[];
+    scores: Float32Array;
+    rawStrengths: Float32Array;
+    supportCounts: Uint16Array;
+    probabilities: Float32Array;
+  };
   explain?(context: number[], candidateToken: number, maxTerms?: number): {
     candidate: number;
     total: number;
@@ -50,7 +60,14 @@ const PSAMWasmDemo = () => {
 
   // Inference
   const [inferenceInput, setInferenceInput] = useState("luna loved to explore the");
-  const [predictions, setPredictions] = useState<{ token: number; word: string; score: number; probability: number }[]>([]);
+  const [predictions, setPredictions] = useState<{
+    token: number;
+    word: string;
+    score: number;
+    rawStrength: number;
+    supportCount: number;
+    probability: number;
+  }[]>([]);
   const [explanation, setExplanation] = useState<{
     token: string;
     total: number;
@@ -73,9 +90,11 @@ const PSAMWasmDemo = () => {
     input: string;
     predicted: string;
     score: number;
+    rawStrength: number;
+    supportCount: number;
     probability: number;
     confidence: number;
-    alternatives: { word: string; probability: number }[];
+    alternatives: { word: string; probability: number; rawStrength: number; supportCount: number }[];
   }[]>([]);
 
   // Parameters
@@ -119,8 +138,10 @@ const PSAMWasmDemo = () => {
       const preds = result.ids.map((id, i) => ({
         token: id,
         word: vocab[id] || `<${id}>`,
-        score: result.scores[i],
-        probability: result.probabilities[i]
+        score: result.scores[i] ?? 0,
+        rawStrength: result.rawStrengths[i] ?? 0,
+        supportCount: result.supportCounts[i] ?? 0,
+        probability: result.probabilities[i] ?? 0,
       }));
 
       setPredictions(preds);
@@ -245,8 +266,8 @@ const PSAMWasmDemo = () => {
               const contextArray = new Uint32Array(context);
               const contextPtr = Module._malloc(contextArray.length * 4);
               Module.HEAPU32.set(contextArray, contextPtr / 4);
-
-              const predsPtr = Module._malloc(maxPredictions * 12);
+              const PREDICTION_SIZE = 20;
+              const predsPtr = Module._malloc(maxPredictions * PREDICTION_SIZE);
 
               // Create sampler config with z-score normalization
               const samplerPtr = Module._malloc(24);
@@ -263,14 +284,18 @@ const PSAMWasmDemo = () => {
 
               const ids: number[] = [];
               const scores: number[] = [];
+              const rawStrengths: number[] = [];
+              const supportCounts: number[] = [];
               const probs: number[] = [];
 
               if (numPreds > 0) {
                 for (let i = 0; i < numPreds; i++) {
-                  const offset = predsPtr / 4 + i * 3;
-                  ids.push(Module.HEAPU32[offset]);
-                  scores.push(Module.HEAPF32[offset + 1]);
-                  probs.push(Module.HEAPF32[offset + 2]);
+                  const base = predsPtr + i * PREDICTION_SIZE;
+                  ids.push(Module.HEAPU32[base >> 2]);
+                  scores.push(Module.HEAPF32[(base + 4) >> 2]);
+                  rawStrengths.push(Module.HEAPF32[(base + 8) >> 2]);
+                  supportCounts.push(Module.HEAPU16[(base + 12) >> 1]);
+                  probs.push(Module.HEAPF32[(base + 16) >> 2]);
                 }
               }
 
@@ -278,7 +303,13 @@ const PSAMWasmDemo = () => {
               Module._free(predsPtr);
               Module._free(samplerPtr);
 
-              return { ids, scores: new Float32Array(scores), probabilities: new Float32Array(probs) };
+              return {
+                ids,
+                scores: new Float32Array(scores),
+                rawStrengths: new Float32Array(rawStrengths),
+                supportCounts: new Uint16Array(supportCounts),
+                probabilities: new Float32Array(probs)
+              };
             },
 
             explain: (context: number[], candidateToken: number, maxTerms = 32) => {
@@ -511,11 +542,15 @@ const PSAMWasmDemo = () => {
         input: currentInput,
         predicted: word,
         score: result.scores[selectedIdx],
+        rawStrength: result.rawStrengths[selectedIdx] ?? 0,
+        supportCount: result.supportCounts[selectedIdx] ?? 0,
         probability: probs[selectedIdx],
         confidence,
         alternatives: result.ids.slice(1, 3).map((id, i) => ({
           word: vocab[id] || `<${id}>`,
-          probability: probs[i + 1]
+          probability: probs[i + 1],
+          rawStrength: result.rawStrengths[i + 1] ?? 0,
+          supportCount: result.supportCounts[i + 1] ?? 0,
         }))
       });
 
@@ -836,9 +871,11 @@ const PSAMWasmDemo = () => {
                   <div className="space-y-2">
                     {predictions.slice(0, 5).map((pred, i) => (
                       <div key={i} className="flex items-center gap-3">
-                        <div className="w-32 text-right font-mono text-xs">
-                          <div>{pred.score.toFixed(3)}</div>
-                          <div className="text-gray-500">({(pred.probability * 100).toFixed(1)}%)</div>
+                        <div className="w-36 text-right font-mono text-[11px] leading-tight">
+                          <div>score {pred.score.toFixed(3)}</div>
+                          <div>raw {pred.rawStrength.toFixed(3)}</div>
+                          <div className="text-gray-500">support {pred.supportCount}</div>
+                          <div className="text-gray-500">{(pred.probability * 100).toFixed(1)}%</div>
                         </div>
                         <div className="flex-1 bg-gray-200 rounded-full h-8 overflow-hidden">
                           <div
@@ -899,13 +936,20 @@ const PSAMWasmDemo = () => {
                           <span className="text-gray-600">{item.input}</span>
                           <span className="text-green-600 font-bold"> {item.predicted}</span>
                         </div>
-                        <div className="text-xs text-gray-500">
-                          Score: {item.score.toFixed(3)} |
-                          Prob: {(item.probability * 100).toFixed(1)}% |
-                          Conf: {item.confidence.toFixed(2)}x
+                        <div className="text-xs text-gray-500 space-x-1">
+                          <span>Score: {item.score.toFixed(3)}</span>
+                          <span>Raw: {item.rawStrength.toFixed(3)}</span>
+                          <span>Support: {item.supportCount}</span>
+                          <span>Prob: {(item.probability * 100).toFixed(1)}%</span>
+                          <span>Conf: {item.confidence.toFixed(2)}x</span>
                           {item.alternatives.length > 0 && (
-                            <span className="ml-2">
-                              | Alt: {item.alternatives.map((a) => `"${a.word}" (${(a.probability * 100).toFixed(0)}%)`).join(', ')}
+                            <span className="ml-1">
+                              | Alt: {item.alternatives
+                                .map(
+                                  (a) =>
+                                    `"${a.word}" ${(a.probability * 100).toFixed(0)}% · raw ${a.rawStrength.toFixed(2)} · support ${a.supportCount}`
+                                )
+                                .join(', ')}
                             </span>
                           )}
                         </div>

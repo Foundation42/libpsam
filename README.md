@@ -52,6 +52,15 @@ psam_sampler_t sampler = {
 psam_prediction_t predictions[10];
 int n = psam_predict_with_sampler(model, context, 3, &sampler, predictions, 10);
 
+for (int i = 0; i < n; ++i) {
+    printf("token=%u score=%.3f raw=%.3f supports=%u prob=%.4f\n",
+           predictions[i].token,
+           predictions[i].score,
+           predictions[i].raw_strength,
+           predictions[i].support_count,
+           predictions[i].calibrated_prob);
+}
+
 // Save/load
 psam_save(model, "model.psam");
 psam_model_t* loaded = psam_load("model.psam");
@@ -70,7 +79,7 @@ const psam = createPSAM(50000, 8, 32);
 psam.trainBatch([1, 2, 3, 4, 5]);
 psam.finalizeTraining();
 
-const { ids, scores } = psam.predict([1, 2, 3], 10);
+const { ids, scores, rawStrengths, supportCounts } = psam.predict([1, 2, 3], 10);
 psam.save('model.psam');
 ```
 
@@ -83,7 +92,7 @@ psam = PSAM(vocab_size=50000, window=8, top_k=32)
 psam.train_batch([1, 2, 3, 4, 5])
 psam.finalize_training()
 
-token_ids, scores = psam.predict([1, 2, 3], max_predictions=10)
+token_ids, scores, raw_strengths, support_counts, probs = psam.predict([1, 2, 3], max_predictions=10)
 psam.save('model.psam')
 ```
 

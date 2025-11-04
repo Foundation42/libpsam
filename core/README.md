@@ -81,7 +81,11 @@ psam_prediction_t predictions[10];
 int num_predictions = psam_predict(model, context, 3, predictions, 10);
 
 for (int i = 0; i < num_predictions; i++) {
-    printf("Token %u: %.3f\n", predictions[i].token_id, predictions[i].score);
+    printf("Token %u: score=%.3f raw=%.3f supports=%u\n",
+           predictions[i].token,
+           predictions[i].score,
+           predictions[i].raw_strength,
+           predictions[i].support_count);
 }
 ```
 

@@ -269,7 +269,7 @@ def test_prompt_injection_defense(sampler: SamplerConfig):
         helpful_comp = helpful_model.create_layered_composite()
         try:
             helpful_comp.set_base_weight(1.0)
-            ids_helpful, _, probs_helpful = helpful_comp.predict(
+            ids_helpful, _, _, _, probs_helpful = helpful_comp.predict(
                 clean_ids, max_predictions=10, sampler=sampler
             )
 
@@ -289,7 +289,7 @@ def test_prompt_injection_defense(sampler: SamplerConfig):
             helpful_comp2 = helpful_model.create_layered_composite()
             try:
                 helpful_comp2.set_base_weight(1.0)
-                ids_vuln, _, probs_vuln = helpful_comp2.predict(
+                ids_vuln, _, _, _, probs_vuln = helpful_comp2.predict(
                     injection_ids, max_predictions=10, sampler=sampler
                 )
 
@@ -311,7 +311,7 @@ def test_prompt_injection_defense(sampler: SamplerConfig):
 
         try:
             if injection_ids:
-                ids_def, _, probs_def = defended.predict(
+                ids_def, _, _, _, probs_def = defended.predict(
                     injection_ids, max_predictions=10, sampler=sampler
                 )
 
@@ -329,7 +329,7 @@ def test_prompt_injection_defense(sampler: SamplerConfig):
 
             # Test 4: Defended model on clean input (should still work well)
             if clean_ids:
-                ids_def_clean, _, probs_def_clean = defended.predict(
+                ids_def_clean, _, _, _, probs_def_clean = defended.predict(
                     clean_ids, max_predictions=10, sampler=sampler
                 )
 
@@ -427,7 +427,7 @@ def test_multi_pattern_defense(sampler: SamplerConfig):
                 test_ids = encode_texts([test_pattern], token_to_id)
 
                 if test_ids:
-                    ids_result, _, probs_result = defended.predict(
+                    ids_result, _, _, _, probs_result = defended.predict(
                         test_ids, max_predictions=10, sampler=sampler
                     )
 
@@ -504,12 +504,12 @@ def test_defense_effectiveness_metrics(sampler: SamplerConfig):
 
                 if pattern_ids:
                     # Vulnerable model
-                    _, _, probs_v = vulnerable.predict(pattern_ids, max_predictions=10, sampler=sampler)
+                    _, _, _, _, probs_v = vulnerable.predict(pattern_ids, max_predictions=10, sampler=sampler)
                     if probs_v is not None:
                         vuln_entropies.append(entropy(list(probs_v)))
 
                     # Defended model
-                    _, _, probs_d = defended.predict(pattern_ids, max_predictions=10, sampler=sampler)
+                    _, _, _, _, probs_d = defended.predict(pattern_ids, max_predictions=10, sampler=sampler)
                     if probs_d is not None:
                         def_entropies.append(entropy(list(probs_d)))
 

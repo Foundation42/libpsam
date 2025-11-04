@@ -171,7 +171,8 @@ export class PSAMWASM implements TrainablePSAM {
     this.module.HEAPU32.set(contextArray, contextPtr / 4);
 
     // Allocate memory for predictions (12 bytes per prediction: token + score + calibrated_prob)
-    const predsPtr = this.module._malloc(maxPreds * 12);
+    const PREDICTION_SIZE = 20;
+    const predsPtr = this.module._malloc(maxPreds * PREDICTION_SIZE);
 
     let numPreds: number;
 
@@ -195,14 +196,18 @@ export class PSAMWASM implements TrainablePSAM {
     // Read predictions
     const ids: number[] = [];
     const scoresArray: number[] = [];
+    const rawStrengthArray: number[] = [];
+    const supportCountArray: number[] = [];
     const probabilitiesArray: number[] = [];
 
     if (numPreds > 0) {
       for (let i = 0; i < numPreds; i++) {
-        const offset = predsPtr / 4 + i * 3; // 3 floats per prediction (token is uint32, score/prob are float)
-        ids.push(this.module.HEAPU32[offset]);
-        scoresArray.push(this.module.HEAPF32[offset + 1]);
-        probabilitiesArray.push(this.module.HEAPF32[offset + 2]);
+        const base = predsPtr + i * PREDICTION_SIZE;
+        ids.push(this.module.HEAPU32[base >> 2]);
+        scoresArray.push(this.module.HEAPF32[(base + 4) >> 2]);
+        rawStrengthArray.push(this.module.HEAPF32[(base + 8) >> 2]);
+        supportCountArray.push(this.module.HEAPU16[(base + 12) >> 1]);
+        probabilitiesArray.push(this.module.HEAPF32[(base + 16) >> 2]);
       }
     }
 
@@ -213,6 +218,8 @@ export class PSAMWASM implements TrainablePSAM {
     return {
       ids,
       scores: new Float32Array(scoresArray),
+      rawStrengths: new Float32Array(rawStrengthArray),
+      supportCounts: new Uint16Array(supportCountArray),
       probabilities: new Float32Array(probabilitiesArray)
     };
   }

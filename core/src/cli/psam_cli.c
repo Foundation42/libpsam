@@ -211,29 +211,48 @@ static int sample_prediction(const psam_prediction_t* preds,
         candidate_count = num_preds;
     }
 
-    double* logits = malloc((size_t)candidate_count * sizeof(double));
+    double* logits = NULL;
     double* probs = malloc((size_t)candidate_count * sizeof(double));
-    if (!logits || !probs) {
-        free(logits);
-        free(probs);
+    if (!probs) {
         return -1;
     }
 
-    double inv_temp = 1.0 / (double)temperature;
-    double max_logit = -DBL_MAX;
+    bool use_calibrated = false;
     for (int i = 0; i < candidate_count; ++i) {
-        double logit = (double)preds[i].score * inv_temp;
-        logits[i] = logit;
-        if (logit > max_logit) {
-            max_logit = logit;
+        if (preds[i].calibrated_prob > 0.0f) {
+            use_calibrated = true;
+            break;
         }
     }
 
     double sum = 0.0;
-    for (int i = 0; i < candidate_count; ++i) {
-        double val = exp(logits[i] - max_logit);
-        probs[i] = val;
-        sum += val;
+    if (use_calibrated) {
+        for (int i = 0; i < candidate_count; ++i) {
+            probs[i] = preds[i].calibrated_prob;
+            sum += probs[i];
+        }
+    } else {
+        logits = malloc((size_t)candidate_count * sizeof(double));
+        if (!logits) {
+            free(probs);
+            return -1;
+        }
+
+        double inv_temp = 1.0 / (double)temperature;
+        double max_logit = -DBL_MAX;
+        for (int i = 0; i < candidate_count; ++i) {
+            double logit = (double)preds[i].score * inv_temp;
+            logits[i] = logit;
+            if (logit > max_logit) {
+                max_logit = logit;
+            }
+        }
+
+        for (int i = 0; i < candidate_count; ++i) {
+            double val = exp(logits[i] - max_logit);
+            probs[i] = val;
+            sum += val;
+        }
     }
 
     if (sum <= 0.0) {
@@ -278,15 +297,15 @@ static int sample_prediction(const psam_prediction_t* preds,
         cumulative += probs[i];
         if (r <= cumulative || i == trimmed_count - 1) {
             *out_token = preds[i].token;
-            free(logits);
             free(probs);
+            free(logits);
             return 0;
         }
     }
 
     *out_token = preds[trimmed_count - 1].token;
-    free(logits);
     free(probs);
+    free(logits);
     return 0;
 }
 
@@ -1549,6 +1568,8 @@ static int predict_command(int argc, char** argv) {
                 printf(", \"token\":\"%s\"", token_str);
             }
             printf(", \"score\":%.6f", preds[i].score);
+            printf(", \"raw_strength\":%.6f", preds[i].raw_strength);
+            printf(", \"support_count\":%u", (unsigned)preds[i].support_count);
             if (preds[i].calibrated_prob > 0.0f) {
                 printf(", \"prob\":%.6f", preds[i].calibrated_prob);
             }
@@ -1560,6 +1581,8 @@ static int predict_command(int argc, char** argv) {
                 printf(",\"token\":\"%s\"", token_str);
             }
             printf(",\"score\":%.6f", preds[i].score);
+            printf(",\"raw_strength\":%.6f", preds[i].raw_strength);
+            printf(",\"support_count\":%u", (unsigned)preds[i].support_count);
             if (preds[i].calibrated_prob > 0.0f) {
                 printf(",\"prob\":%.6f", preds[i].calibrated_prob);
             }

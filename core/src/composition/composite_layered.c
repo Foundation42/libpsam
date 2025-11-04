@@ -41,6 +41,8 @@ static psam_error_t composite_add_layer_internal(
 typedef struct {
     uint32_t token;
     float score;
+    float raw_strength;
+    uint32_t support_count;
 } composite_score_t;
 
 static bool validate_layer_compat(psam_model_t* base, psam_model_t* layer) {
@@ -424,6 +426,8 @@ static void accumulate_scores(
     for (size_t i = 0; i < pred_count; ++i) {
         uint32_t token = preds[i].token;
         float contribution = preds[i].score * weight + bias;
+        float raw_component = preds[i].raw_strength * weight;
+        uint32_t support_component = preds[i].support_count;
         if (contribution == 0.0f && bias == 0.0f) {
             continue;
         }
@@ -432,6 +436,11 @@ static void accumulate_scores(
         for (size_t j = 0; j < *accum_size; ++j) {
             if (accum[j].token == token) {
                 accum[j].score += contribution;
+                accum[j].raw_strength += raw_component;
+                if (support_component > 0) {
+                    uint64_t updated = (uint64_t)accum[j].support_count + support_component;
+                    accum[j].support_count = (updated > UINT32_MAX) ? UINT32_MAX : (uint32_t)updated;
+                }
                 found = true;
                 break;
             }
@@ -440,6 +449,8 @@ static void accumulate_scores(
         if (!found && *accum_size < capacity) {
             accum[*accum_size].token = token;
             accum[*accum_size].score = contribution;
+            accum[*accum_size].raw_strength = raw_component;
+            accum[*accum_size].support_count = support_component;
             (*accum_size)++;
         }
     }
@@ -512,6 +523,10 @@ int psam_composite_predict(
     for (size_t i = 0; i < to_copy; ++i) {
         out_preds[i].token = accum[i].token;
         out_preds[i].score = accum[i].score;
+        out_preds[i].raw_strength = accum[i].raw_strength;
+        uint32_t supports = accum[i].support_count;
+        out_preds[i].support_count = (supports > UINT16_MAX) ? UINT16_MAX : (uint16_t)supports;
+        out_preds[i]._reserved = 0;
         out_preds[i].calibrated_prob = 0.0f;
     }
 

@@ -87,6 +87,10 @@ export interface Prediction {
   tokenId: TokenId;
   /** Raw score */
   score: number;
+  /** Contextual contribution sum (bias excluded) */
+  rawStrength: number;
+  /** Number of contributing context tokens */
+  supportCount: number;
   /** Calibrated probability (if available) */
   probability?: number;
 }
@@ -99,6 +103,10 @@ export interface InferenceResult {
   ids: TokenId[];
   /** Raw scores */
   scores: Float32Array;
+  /** Sum of contextual contributions per token */
+  rawStrengths: Float32Array;
+  /** Number of supporting context tokens */
+  supportCounts: Uint16Array;
   /** Calibrated probabilities (optional) */
   probabilities?: Float32Array;
 }

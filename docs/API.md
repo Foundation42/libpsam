@@ -45,10 +45,18 @@ typedef struct {
 ```c
 typedef struct {
     uint32_t token_id;        // Predicted token ID
-    float score;              // Raw score
+    float score;              // Total score (bias + raw strength)
+    float raw_strength;       // Sum of contextual contributions only
+    uint16_t support_count;   // Number of contributing context tokens
+    uint16_t _reserved;       // Padding / reserved for future use
     float calibrated_prob;    // Calibrated probability (if available)
 } psam_prediction_t;
 ```
+
+- `score` is the ranking value (bias + contextual evidence).
+- `raw_strength` isolates the contextual contribution.
+- `support_count` is the number of supporting context tokens (capped at 65,535).
+- `calibrated_prob` is the sampler's softmax probability.
 
 #### `psam_explain_term_t`
 

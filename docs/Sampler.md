@@ -59,11 +59,18 @@ psam_sampler_t sampler = {
 psam_prediction_t preds[32];
 int n = psam_predict_with_sampler(model, context, ctx_len, &sampler, preds, 32);
 
-// Predictions now have both raw scores and calibrated probabilities
+// Each prediction exposes total score, raw contextual strength, supporter count, probability
 for (int i = 0; i < n; i++) {
-    printf("Token %u: score=%.2f prob=%.4f\n",
-           preds[i].token, preds[i].score, preds[i].calibrated_prob);
+    printf("token=%u score=%.2f raw=%.2f supports=%u prob=%.4f\n",
+           preds[i].token,
+           preds[i].score,
+           preds[i].raw_strength,
+           preds[i].support_count,
+           preds[i].calibrated_prob);
 }
+
+// `score` = bias + contextual evidence, `raw_strength` = evidence only,
+// `support_count` = number of contributing context tokens.
 ```
 
 ### CLI

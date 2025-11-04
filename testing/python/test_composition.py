@@ -78,7 +78,9 @@ def build_distribution(
     sampler: SamplerConfig,
     top_k: int = 64,
 ) -> Dict[str, float]:
-    ids, _scores, probabilities = composite.predict(context, max_predictions=top_k, sampler=sampler)
+    ids, _scores, _raw_strengths, _support_counts, probabilities = composite.predict(
+        context, max_predictions=top_k, sampler=sampler
+    )
     assert probabilities is not None, "Sampler must produce probability mass"
 
     mass: Dict[str, float] = {}
@@ -226,7 +228,9 @@ def test_markov_transitions(sampler: SamplerConfig):
             composite_pure_a.add_layer("overlay_b", model_b, 0.0)
 
             context = [vocab.token_to_id["apple"]]
-            ids, _scores, probs = composite_pure_a.predict(context, max_predictions=8, sampler=sampler)
+            ids, _scores, _raw_strengths, _support_counts, probs = composite_pure_a.predict(
+                context, max_predictions=8, sampler=sampler
+            )
             assert probs is not None
 
             # Find "ant" in predictions (should be top prediction for apple)
@@ -249,7 +253,9 @@ def test_markov_transitions(sampler: SamplerConfig):
             composite_blend.add_layer("overlay_b", model_b, 0.5)
 
             context = [vocab.token_to_id["apple"]]
-            ids, _scores, probs = composite_blend.predict(context, max_predictions=16, sampler=sampler)
+            ids, _scores, _raw_strengths, _support_counts, probs = composite_blend.predict(
+                context, max_predictions=16, sampler=sampler
+            )
             assert probs is not None
 
             # Both A-pattern (ant) and B-pattern tokens should appear
@@ -304,9 +310,9 @@ def test_weight_sweep_linearity(sampler: SamplerConfig):
                 a_percent = mass.get("A", 0.0)
                 a_percentages.append(a_percent)
 
-                # Each weight should produce distribution close to target (±20%)
+                # Each weight should produce distribution close to target (±16%)
                 expected = weight_a * 100.0
-                assert abs(a_percent - expected) <= 20.0, f"Weight {weight_a:.1f}: expected ~{expected:.0f}% A, got {a_percent:.1f}%"
+                assert abs(a_percent - expected) <= 16.0, f"Weight {weight_a:.1f}: expected ~{expected:.0f}% A, got {a_percent:.1f}%"
             finally:
                 composite.destroy()
 
@@ -362,7 +368,9 @@ def test_uniform_baseline(sampler: SamplerConfig):
             composite.set_base_weight(1.0)
 
             context = [vocab.token_to_id["apple"]]
-            ids, _scores, probs = composite.predict(context, max_predictions=16, sampler=sampler)
+            ids, _scores, _raw_strengths, _support_counts, probs = composite.predict(
+                context, max_predictions=16, sampler=sampler
+            )
             assert probs is not None
 
             # Calculate entropy (should be relatively high for uniform distribution)

@@ -311,7 +311,7 @@ def test_degraded_shakespeare_reconstruction(sampler: SamplerConfig):
             context_ids = encode_text(test_context, token_to_id)
 
             if context_ids:
-                ids_clean, _, probs_clean = composite_clean.predict(
+                ids_clean, _, _, _, probs_clean = composite_clean.predict(
                     context_ids, max_predictions=10, sampler=sampler
                 )
                 assert probs_clean is not None
@@ -331,7 +331,7 @@ def test_degraded_shakespeare_reconstruction(sampler: SamplerConfig):
             composite_blend.add_layer("corruption_aware", corrupted_model, 0.3)
 
             if context_ids:
-                ids_blend, _, probs_blend = composite_blend.predict(
+                ids_blend, _, _, _, probs_blend = composite_blend.predict(
                     context_ids, max_predictions=10, sampler=sampler
                 )
                 assert probs_blend is not None
@@ -358,7 +358,7 @@ def test_degraded_shakespeare_reconstruction(sampler: SamplerConfig):
             composite_corrupt = corrupted_model.create_layered_composite()
             try:
                 composite_corrupt.set_base_weight(1.0)
-                ids_corrupt, _, probs_corrupt = composite_corrupt.predict(
+                ids_corrupt, _, _, _, probs_corrupt = composite_corrupt.predict(
                     corrupted_context_ids, max_predictions=10, sampler=sampler
                 )
 
@@ -376,7 +376,7 @@ def test_degraded_shakespeare_reconstruction(sampler: SamplerConfig):
                 composite_heal.set_base_weight(0.8)
                 composite_heal.add_layer("corruption_aware", corrupted_model, 0.2)
 
-                ids_heal, _, probs_heal = composite_heal.predict(
+                ids_heal, _, _, _, probs_heal = composite_heal.predict(
                     corrupted_context_ids, max_predictions=10, sampler=sampler
                 )
 
@@ -445,7 +445,7 @@ def test_corruption_pattern_learning(sampler: SamplerConfig):
             comp_clean = clean_model.create_layered_composite()
             try:
                 comp_clean.set_base_weight(1.0)
-                ids_clean, _, _ = comp_clean.predict(context_ids, max_predictions=10, sampler=sampler)
+                ids_clean, _, _, _, _ = comp_clean.predict(context_ids, max_predictions=10, sampler=sampler)
                 tokens_clean = [id_to_token[id] for id in ids_clean if id in id_to_token]
             finally:
                 comp_clean.destroy()
@@ -454,7 +454,7 @@ def test_corruption_pattern_learning(sampler: SamplerConfig):
             comp_corrupt = corrupt_model.create_layered_composite()
             try:
                 comp_corrupt.set_base_weight(1.0)
-                ids_corrupt, _, _ = comp_corrupt.predict(context_ids, max_predictions=10, sampler=sampler)
+                ids_corrupt, _, _, _, _ = comp_corrupt.predict(context_ids, max_predictions=10, sampler=sampler)
                 tokens_corrupt = [id_to_token[id] for id in ids_corrupt if id in id_to_token]
             finally:
                 comp_corrupt.destroy()
