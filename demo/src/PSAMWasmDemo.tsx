@@ -291,11 +291,13 @@ const PSAMWasmDemo = () => {
               if (numPreds > 0) {
                 for (let i = 0; i < numPreds; i++) {
                   const base = predsPtr + i * PREDICTION_SIZE;
-                  ids.push(Module.HEAPU32[base >> 2]);
-                  scores.push(Module.HEAPF32[(base + 4) >> 2]);
-                  rawStrengths.push(Module.HEAPF32[(base + 8) >> 2]);
-                  supportCounts.push(Module.HEAPU16[(base + 12) >> 1]);
-                  probs.push(Module.HEAPF32[(base + 16) >> 2]);
+                  const idx32 = base >>> 2;
+                  ids.push(Module.HEAPU32[idx32]);
+                  scores.push(Module.HEAPF32[idx32 + 1]);
+                  rawStrengths.push(Module.HEAPF32[idx32 + 2]);
+                  const idx16 = base >>> 1;
+                  supportCounts.push(Module.HEAPU16[idx16 + 6]);
+                  probs.push(Module.HEAPF32[idx32 + 4]);
                 }
               }
 

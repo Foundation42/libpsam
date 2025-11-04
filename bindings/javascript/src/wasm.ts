@@ -204,11 +204,13 @@ export class PSAMWASM implements TrainablePSAM {
     if (numPreds > 0) {
       for (let i = 0; i < numPreds; i++) {
         const base = predsPtr + i * PREDICTION_SIZE;
-        ids.push(this.module.HEAPU32[base >> 2]);
-        scoresArray.push(this.module.HEAPF32[(base + 4) >> 2]);
-        rawStrengthArray.push(this.module.HEAPF32[(base + 8) >> 2]);
-        supportCountArray.push(this.module.HEAPU16[(base + 12) >> 1]);
-        probabilitiesArray.push(this.module.HEAPF32[(base + 16) >> 2]);
+        const idx32 = base >>> 2;
+        ids.push(this.module.HEAPU32[idx32]);
+        scoresArray.push(this.module.HEAPF32[idx32 + 1]);
+        rawStrengthArray.push(this.module.HEAPF32[idx32 + 2]);
+        const idx16 = base >>> 1;
+        supportCountArray.push(this.module.HEAPU16[idx16 + 6]);
+        probabilitiesArray.push(this.module.HEAPF32[idx32 + 4]);
       }
     }
 
