@@ -90,10 +90,10 @@ interface PSAMInstance {
 }
 
 const testScenarios = [
-  { name: "Simple Pattern", text: "the cat sat on the mat. the dog sat on the rug." },
-  { name: "Repetition", text: "a b c d. a b c e. a b c f. a b c g." },
-  { name: "Sequences", text: "one two three four. five six seven eight. nine ten eleven twelve." },
-  { name: "Story", text: "once upon a time in a small village, there lived a curious young girl named luna. luna loved to explore the forest near her home. one sunny morning, luna decided to venture deeper into the woods than ever before. she discovered a hidden clearing where magical butterflies danced in the golden sunlight. the butterflies led her to an ancient oak tree with a door carved into its trunk. luna opened the door and found a library filled with books that whispered secrets of the forest. she spent hours reading about the creatures and plants that called the forest home. as the sun began to set, the butterflies guided luna back to the village. from that day on, luna visited the magical library every week, learning more about the wonders of nature. with each visit, the library revealed new secrets. luna learned the language of birds and how to read the patterns in tree bark. the ancient books taught her about healing herbs and the stories written in the stars. one autumn evening, the butterflies brought luna a special gift, a silver key that unlocked a hidden chamber deep within the oak tree. inside the chamber, luna found a crystal that glowed with soft blue light. the crystal showed her visions of the forest's past and glimpses of its future. luna realized she had become the forest's keeper, entrusted with protecting its magic for generations to come." },
+  { name: "Simple Pattern", text: "the cat sat on the mat. the dog sat on the rug.", suggestedInput: "the cat" },
+  { name: "Repetition", text: "a b c d. a b c e. a b c f. a b c g.", suggestedInput: "a b c" },
+  { name: "Sequences", text: "one two three four. five six seven eight. nine ten eleven twelve.", suggestedInput: "one two three" },
+  { name: "Story", text: "once upon a time in a small village, there lived a curious young girl named luna. luna loved to explore the forest near her home. one sunny morning, luna decided to venture deeper into the woods than ever before. she discovered a hidden clearing where magical butterflies danced in the golden sunlight. the butterflies led her to an ancient oak tree with a door carved into its trunk. luna opened the door and found a library filled with books that whispered secrets of the forest. she spent hours reading about the creatures and plants that called the forest home. as the sun began to set, the butterflies guided luna back to the village. from that day on, luna visited the magical library every week, learning more about the wonders of nature. with each visit, the library revealed new secrets. luna learned the language of birds and how to read the patterns in tree bark. the ancient books taught her about healing herbs and the stories written in the stars. one autumn evening, the butterflies brought luna a special gift, a silver key that unlocked a hidden chamber deep within the oak tree. inside the chamber, luna found a crystal that glowed with soft blue light. the crystal showed her visions of the forest's past and glimpses of its future. luna realized she had become the forest's keeper, entrusted with protecting its magic for generations to come.", suggestedInput: "luna loved to explore the" },
 ];
 
 const PSAMWasmDemo = () => {
@@ -107,13 +107,18 @@ const PSAMWasmDemo = () => {
   const [trained, setTrained] = useState(false);
 
   // Inference
-  const [inferenceInput, setInferenceInput] = useState("luna loved to explore the");
+  const [inferenceInput, setInferenceInput] = useState("the cat");
   const [predictions, setPredictions] = useState<{
     token: number;
     word: string;
     score: number;
     rawStrength: number;
     supportCount: number;
+    probability: number;
+  }[]>([]);
+  const [stochasticSamples, setStochasticSamples] = useState<{
+    word: string;
+    count: number;
     probability: number;
   }[]>([]);
   const [explanation, setExplanation] = useState<{
@@ -154,6 +159,7 @@ const PSAMWasmDemo = () => {
   const [enablePpmi, setEnablePpmi] = useState(true);
   const [edgeDropout, setEdgeDropout] = useState(0.0);
   const [temperature, setTemperature] = useState(1.0);
+  const [samplingMode, setSamplingMode] = useState<'greedy' | 'stochastic'>('greedy');
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Training state
@@ -193,6 +199,16 @@ const PSAMWasmDemo = () => {
       }));
 
       setPredictions(preds);
+
+      // Generate stochastic samples
+      if (result.ids.length > 0) {
+        const samples = generateStochasticSamples(
+          result.ids,
+          Array.from(result.probabilities),
+          100
+        );
+        setStochasticSamples(samples);
+      }
 
       // Generate explanation for top prediction
       if (preds.length > 0 && psam.explain) {
@@ -498,6 +514,67 @@ const PSAMWasmDemo = () => {
     return { tokens, vocab: uniqueWords };
   };
 
+  const sampleToken = (ids: number[], probs: number[]): number => {
+    if (samplingMode === 'greedy') {
+      return ids[0];
+    } else {
+      // Stochastic sampling
+      const totalProb = probs.reduce((sum, value) => sum + value, 0);
+      if (totalProb === 0) return ids[0];
+
+      const target = Math.random() * totalProb;
+      let cumsum = 0;
+
+      for (let j = 0; j < probs.length; j++) {
+        cumsum += probs[j];
+        if (target <= cumsum) {
+          return ids[j];
+        }
+      }
+
+      return ids[ids.length - 1]; // fallback
+    }
+  };
+
+  const generateStochasticSamples = (ids: number[], probs: number[], numSamples: number = 100) => {
+    const samples: { [key: string]: number } = {};
+    const wordMap: { [key: string]: number } = {};
+
+    // Collect samples
+    for (let i = 0; i < numSamples; i++) {
+      const totalProb = probs.reduce((sum, value) => sum + value, 0);
+      if (totalProb === 0) break;
+
+      const target = Math.random() * totalProb;
+      let cumsum = 0;
+      let selectedIdx = 0;
+
+      for (let j = 0; j < probs.length; j++) {
+        cumsum += probs[j];
+        if (target <= cumsum) {
+          selectedIdx = j;
+          break;
+        }
+      }
+
+      const word = vocab[ids[selectedIdx]] || `<${ids[selectedIdx]}>`;
+      samples[word] = (samples[word] || 0) + 1;
+      wordMap[word] = probs[selectedIdx];
+    }
+
+    // Convert to array and sort by count
+    const result = Object.entries(samples)
+      .map(([word, count]) => ({
+        word,
+        count,
+        probability: wordMap[word],
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    return result;
+  };
+
   const handleTrain = () => {
     const createFn = (window as any).__psamCreate;
     if (!createFn) return;
@@ -562,20 +639,9 @@ const PSAMWasmDemo = () => {
       // Use calibrated probabilities from sampler
       const probs = Array.from(result.probabilities);
 
-      // Sample from distribution
-      const rand = Math.random();
-      let cumsum = 0;
-      let selectedIdx = 0;
-
-      for (let j = 0; j < probs.length; j++) {
-        cumsum += probs[j];
-        if (rand < cumsum) {
-          selectedIdx = j;
-          break;
-        }
-      }
-
-      const selectedToken = result.ids[selectedIdx];
+      // Sample token based on current sampling mode
+      const selectedToken = sampleToken(result.ids, probs);
+      const selectedIdx = result.ids.indexOf(selectedToken);
       const word = vocab[selectedToken] || `<${selectedToken}>`;
 
       const confidence = result.ids.length >= 2 ? result.scores[0] / result.scores[1] : Infinity;
@@ -656,7 +722,13 @@ const PSAMWasmDemo = () => {
               {testScenarios.map((scenario, idx) => (
                 <button
                   key={idx}
-                  onClick={() => setText(scenario.text)}
+                  onClick={() => {
+                    setText(scenario.text);
+                    setInferenceInput(scenario.suggestedInput);
+                    setTrained(false);
+                    setPredictions([]);
+                    setStochasticSamples([]);
+                  }}
                   className="px-3 py-2 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors text-gray-700"
                 >
                   {scenario.name}
@@ -755,19 +827,6 @@ const PSAMWasmDemo = () => {
                       step="0.05"
                       min="0"
                       max="0.5"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-1">Temperature</label>
-                    <input
-                      type="number"
-                      value={temperature}
-                      onChange={(e) => setTemperature(Math.max(0.1, parseFloat(e.target.value)))}
-                      className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
-                      step="0.1"
-                      min="0.1"
-                      max="2"
                     />
                   </div>
 
@@ -873,13 +932,38 @@ const PSAMWasmDemo = () => {
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Context (predictions update as you type)
                 </label>
-                <input
-                  type="text"
+                <textarea
                   value={inferenceInput}
                   onChange={(e) => setInferenceInput(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono text-sm"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent font-mono text-sm resize-y"
                   placeholder="Enter context..."
+                  rows={2}
                 />
+              </div>
+
+              {/* Sampling Parameters */}
+              <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                <h4 className="font-medium text-gray-800 mb-3">Sampling Parameters</h4>
+                <div className="grid grid-cols-1 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Temperature
+                      <span className="ml-1 text-gray-500">(affects stochastic mode only)</span>
+                    </label>
+                    <input
+                      type="number"
+                      value={temperature}
+                      onChange={(e) => setTemperature(Math.max(0.1, parseFloat(e.target.value)))}
+                      className="w-full px-3 py-2 border border-gray-300 rounded text-sm"
+                      step="0.1"
+                      min="0.1"
+                      max="10"
+                    />
+                    <div className="text-xs text-gray-500 mt-1">
+                      Lower = more focused, Higher = more diverse
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {/* Action Buttons */}
@@ -887,8 +971,37 @@ const PSAMWasmDemo = () => {
                 <button
                   onClick={() => {
                     if (!psam || !trained || predictions.length === 0) return;
-                    const topPrediction = predictions[0];
-                    setInferenceInput(inferenceInput + ' ' + topPrediction.word);
+
+                    let selectedWord: string;
+
+                    if (samplingMode === 'greedy') {
+                      // Greedy: always pick top prediction
+                      selectedWord = predictions[0].word;
+                    } else {
+                      // Stochastic: sample from cached stochastic samples
+                      if (stochasticSamples.length > 0) {
+                        // Build weighted array based on counts
+                        const weightedChoices: string[] = [];
+                        stochasticSamples.forEach(sample => {
+                          for (let i = 0; i < sample.count; i++) {
+                            weightedChoices.push(sample.word);
+                          }
+                        });
+
+                        // Pick randomly from the weighted choices
+                        const randomIndex = Math.floor(Math.random() * weightedChoices.length);
+                        selectedWord = weightedChoices[randomIndex];
+                      } else {
+                        // Fallback: use live sampling
+                        const ids = predictions.map(p => p.token);
+                        const probs = predictions.map(p => p.probability);
+                        const selectedToken = sampleToken(ids, probs);
+                        const selectedPrediction = predictions.find(p => p.token === selectedToken) || predictions[0];
+                        selectedWord = selectedPrediction.word;
+                      }
+                    }
+
+                    setInferenceInput(inferenceInput + ' ' + selectedWord);
                   }}
                   disabled={!trained || predictions.length === 0}
                   className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
@@ -906,29 +1019,129 @@ const PSAMWasmDemo = () => {
                 </button>
               </div>
 
-              {/* Predictions */}
+              {/* Dual Predictions - Greedy vs Stochastic */}
               {predictions.length > 0 && (
-                <div className="bg-gray-50 rounded-lg p-4 mb-4">
-                  <h4 className="font-medium text-gray-800 mb-3">Top Predictions</h4>
-                  <div className="space-y-2">
-                    {predictions.slice(0, 5).map((pred, i) => (
-                      <div key={i} className="flex items-center gap-3">
-                        <div className="w-36 text-right font-mono text-[11px] leading-tight">
-                          <div>score {pred.score.toFixed(3)}</div>
-                          <div>raw {pred.rawStrength.toFixed(3)}</div>
-                          <div className="text-gray-500">support {pred.supportCount}</div>
-                          <div className="text-gray-500">{(pred.probability * 100).toFixed(1)}%</div>
-                        </div>
-                        <div className="flex-1 bg-gray-200 rounded-full h-8 overflow-hidden">
-                          <div
-                            className="bg-indigo-600 h-full flex items-center px-3 text-white text-sm font-semibold"
-                            style={{ width: `${pred.probability * 100}%` }}
-                          >
-                            "{pred.word}"
+                <div className="grid grid-cols-2 gap-4 mb-4">
+                  {/* Greedy Panel */}
+                  <div
+                    onClick={() => setSamplingMode('greedy')}
+                    className={`rounded-lg p-4 cursor-pointer transition-all ${
+                      samplingMode === 'greedy'
+                        ? 'bg-blue-50 border-2 border-blue-500 shadow-lg'
+                        : 'bg-gray-50 border-2 border-gray-200 hover:border-blue-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-medium text-gray-800 flex items-center gap-2">
+                        🎯 Greedy
+                      </h4>
+                      {samplingMode === 'greedy' && (
+                        <span className="px-2 py-1 bg-blue-500 text-white text-xs rounded font-medium">
+                          ACTIVE
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-600 mb-3">
+                      Always picks highest probability
+                    </div>
+                    <div className="space-y-2">
+                      {predictions.slice(0, 5).map((pred, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <div className="w-24 text-right font-mono text-[10px] leading-tight">
+                            <div className="font-bold">{(pred.probability * 100).toFixed(1)}%</div>
+                            <div className="text-gray-500">sup:{pred.supportCount}</div>
+                          </div>
+                          <div className="flex-1 bg-gray-200 rounded-full h-6 overflow-hidden">
+                            <div
+                              className={`h-full flex items-center px-2 text-white text-xs font-semibold ${
+                                i === 0 ? 'bg-blue-600' : 'bg-blue-400'
+                              }`}
+                              style={{ width: `${pred.probability * 100}%` }}
+                            >
+                              {pred.word}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Stochastic Panel */}
+                  <div
+                    onClick={() => setSamplingMode('stochastic')}
+                    className={`rounded-lg p-4 cursor-pointer transition-all ${
+                      samplingMode === 'stochastic'
+                        ? 'bg-purple-50 border-2 border-purple-500 shadow-lg'
+                        : 'bg-gray-50 border-2 border-gray-200 hover:border-purple-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="font-medium text-gray-800 flex items-center gap-2">
+                        🎲 Stochastic
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (predictions.length > 0) {
+                              const samples = generateStochasticSamples(
+                                predictions.map(p => p.token),
+                                predictions.map(p => p.probability),
+                                100
+                              );
+                              setStochasticSamples(samples);
+                            }
+                          }}
+                          className="ml-2 p-1 hover:bg-purple-200 rounded text-xs"
+                          title="Resample"
+                        >
+                          🔄
+                        </button>
+                      </h4>
+                      {samplingMode === 'stochastic' && (
+                        <span className="px-2 py-1 bg-purple-500 text-white text-xs rounded font-medium">
+                          ACTIVE
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-600 mb-3">
+                      100 samples from distribution (temperature matters!)
+                    </div>
+                    <div className="space-y-2">
+                      {stochasticSamples.length > 0 ? (
+                        stochasticSamples.map((sample, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <div className="w-24 text-right font-mono text-[10px] leading-tight">
+                              <div className="font-bold">{sample.count}/100</div>
+                              <div className="text-gray-500">p:{(sample.probability * 100).toFixed(1)}%</div>
+                            </div>
+                            <div className="flex-1 bg-gray-200 rounded-full h-6 overflow-hidden">
+                              <div
+                                className="bg-purple-600 h-full flex items-center px-2 text-white text-xs font-semibold"
+                                style={{ width: `${(sample.count / 100) * 100}%` }}
+                              >
+                                {sample.word}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        predictions.slice(0, 5).map((pred, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <div className="w-24 text-right font-mono text-[10px] leading-tight">
+                              <div className="font-bold">{(pred.probability * 100).toFixed(1)}%</div>
+                              <div className="text-gray-500">sup:{pred.supportCount}</div>
+                            </div>
+                            <div className="flex-1 bg-gray-200 rounded-full h-6 overflow-hidden">
+                              <div
+                                className="bg-purple-600 h-full flex items-center px-2 text-white text-xs font-semibold"
+                                style={{ width: `${pred.probability * 100}%` }}
+                              >
+                                {pred.word}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
