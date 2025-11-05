@@ -107,4 +107,9 @@ void psam_csr_accumulate(
     float* out_scores
 );
 
+/* From infer.c - shared utilities */
+float compute_idf(const psam_model_t* model, uint32_t token);
+int find_row_index(const psam_model_t* model, uint32_t token, uint32_t offset);
+int compare_predictions(const void* a, const void* b);
+
 #endif /* PSAM_INTERNAL_H */

@@ -14,7 +14,7 @@
  * Compute IDF (Inverse Document Frequency) for a token.
  * Formula: log((1 + total_tokens) / (1 + token_count)) + 1
  */
-static float compute_idf(const psam_model_t* model, uint32_t token) {
+float compute_idf(const psam_model_t* model, uint32_t token) {
     if (token >= model->config.vocab_size) {
         return 1.0f;
     }
@@ -30,7 +30,7 @@ static float compute_idf(const psam_model_t* model, uint32_t token) {
 /**
  * Comparison function for sorting predictions by score (descending)
  */
-static int compare_predictions(const void* a, const void* b) {
+int compare_predictions(const void* a, const void* b) {
     const psam_prediction_t* pa = (const psam_prediction_t*)a;
     const psam_prediction_t* pb = (const psam_prediction_t*)b;
     if (pa->score > pb->score) return -1;
@@ -42,7 +42,7 @@ static int compare_predictions(const void* a, const void* b) {
  * Find row index for (token, offset) pair using binary search.
  * Rows are sorted by (source, offset) in ascending order.
  */
-static int find_row_index(const psam_model_t* model, uint32_t token, uint32_t offset) {
+int find_row_index(const psam_model_t* model, uint32_t token, uint32_t offset) {
     if (!model->row_descriptors || model->row_descriptor_count == 0) {
         return -1;
     }
@@ -585,4 +585,306 @@ psam_error_t psam_explain(
     psam_lock_unlock_rd(&model->lock);
 
     return PSAM_OK;
+}
+
+/* ============================ Residual/Deferred Activation ============================ */
+
+/**
+ * Single deferred association that will fire at a future position
+ */
+typedef struct {
+    uint32_t candidate;       /* Token this association predicts */
+    float contribution;       /* Score contribution when it fires */
+    int remaining_offset;     /* Positions until it fires (0 = fire now) */
+} deferred_association_t;
+
+/**
+ * Buffer holding deferred associations
+ */
+typedef struct {
+    deferred_association_t* associations;
+    size_t count;
+    size_t capacity;
+} residual_buffer_t;
+
+/**
+ * Initialize a residual buffer
+ */
+static residual_buffer_t* create_residual_buffer(size_t initial_capacity) {
+    residual_buffer_t* buffer = malloc(sizeof(residual_buffer_t));
+    if (!buffer) {
+        return NULL;
+    }
+
+    buffer->associations = malloc(initial_capacity * sizeof(deferred_association_t));
+    if (!buffer->associations) {
+        free(buffer);
+        return NULL;
+    }
+
+    buffer->count = 0;
+    buffer->capacity = initial_capacity;
+    return buffer;
+}
+
+/**
+ * Free a residual buffer
+ */
+static void destroy_residual_buffer(residual_buffer_t* buffer) {
+    if (buffer) {
+        free(buffer->associations);
+        free(buffer);
+    }
+}
+
+/**
+ * Add a deferred association to the buffer
+ */
+static void add_residual(
+    residual_buffer_t* buffer,
+    uint32_t candidate,
+    float contribution,
+    int remaining_offset
+) {
+    /* Grow buffer if needed */
+    if (buffer->count >= buffer->capacity) {
+        size_t new_capacity = buffer->capacity * 2;
+        deferred_association_t* new_assocs = realloc(
+            buffer->associations,
+            new_capacity * sizeof(deferred_association_t)
+        );
+        if (!new_assocs) {
+            return;  /* Silently fail to grow - just skip this residual */
+        }
+        buffer->associations = new_assocs;
+        buffer->capacity = new_capacity;
+    }
+
+    /* Add the association */
+    buffer->associations[buffer->count].candidate = candidate;
+    buffer->associations[buffer->count].contribution = contribution;
+    buffer->associations[buffer->count].remaining_offset = remaining_offset;
+    buffer->count++;
+}
+
+/**
+ * Apply residuals that are ready to fire (remaining_offset == 0)
+ * and age the rest
+ */
+static void apply_and_age_residuals(residual_buffer_t* buffer, float* scores, uint32_t vocab_size) {
+    size_t write_idx = 0;
+
+    for (size_t i = 0; i < buffer->count; i++) {
+        deferred_association_t* assoc = &buffer->associations[i];
+
+        if (assoc->remaining_offset == 0) {
+            /* Fire now - apply to scores */
+            if (assoc->candidate < vocab_size) {
+                scores[assoc->candidate] += assoc->contribution;
+            }
+            /* Don't keep this association */
+        } else {
+            /* Age it */
+            assoc->remaining_offset--;
+            /* Keep it in the buffer */
+            if (write_idx != i) {
+                buffer->associations[write_idx] = *assoc;
+            }
+            write_idx++;
+        }
+    }
+
+    buffer->count = write_idx;
+}
+
+int psam_predict_with_residuals(
+    psam_model_t* model,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    const psam_residual_config_t* residual_config,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+) {
+    if (!model || !context || !out_preds) {
+        return PSAM_ERR_NULL_PARAM;
+    }
+
+    if (!model->is_finalized) {
+        return PSAM_ERR_NOT_TRAINED;
+    }
+
+    /* If residuals disabled or no config, fall back to standard prediction */
+    if (!residual_config || !residual_config->enable) {
+        return psam_predict_with_sampler(model, context, context_len, sampler, out_preds, max_preds);
+    }
+
+    /* Extract residual config */
+    int max_lookahead = residual_config->max_lookahead;
+    float residual_decay = residual_config->residual_decay;
+    float residual_blend = residual_config->residual_blend;
+
+    if (max_lookahead <= 0) {
+        max_lookahead = 3;  /* Default */
+    }
+    if (residual_decay <= 0.0f || residual_decay > 1.0f) {
+        residual_decay = 0.8f;  /* Default */
+    }
+    if (residual_blend < 0.0f || residual_blend > 1.0f) {
+        residual_blend = 0.4f;  /* Default */
+    }
+
+    if (model->config.vocab_size == 0 || context_len == 0) {
+        return 0;  /* No predictions possible */
+    }
+
+    psam_lock_rdlock(&model->lock);
+
+    const uint32_t vocab_size = model->config.vocab_size;
+    int result = 0;
+
+    /* Allocate buffers */
+    float* scores = calloc(vocab_size, sizeof(float));
+    float* raw_strength = calloc(vocab_size, sizeof(float));
+    uint16_t* support_counts = calloc(vocab_size, sizeof(uint16_t));
+    residual_buffer_t* residuals = create_residual_buffer(vocab_size);
+
+    if (!scores || !raw_strength || !support_counts || !residuals) {
+        free(scores);
+        free(raw_strength);
+        free(support_counts);
+        destroy_residual_buffer(residuals);
+        result = PSAM_ERR_OUT_OF_MEMORY;
+        goto cleanup;
+    }
+
+    /* Initialize scores with bias */
+    for (uint32_t i = 0; i < vocab_size; i++) {
+        scores[i] = model->bias[i];
+    }
+
+    /* Process context tokens with residual tracking */
+    if (model->csr && model->csr->row_count > 0) {
+        for (size_t ctx_idx = 0; ctx_idx < context_len; ctx_idx++) {
+            uint32_t token = context[ctx_idx];
+            if (token >= vocab_size) {
+                continue;
+            }
+
+            float idf = compute_idf(model, token);
+
+            /* Compute current offset (for immediate prediction) */
+            uint32_t current_offset = (uint32_t)(context_len - ctx_idx);
+
+            /* Process immediate associations (offset = current_offset) */
+            int row_idx = find_row_index(model, token, current_offset);
+            if (row_idx >= 0) {
+                uint32_t row_start = model->csr->row_offsets[row_idx];
+                uint32_t row_end = model->csr->row_offsets[row_idx + 1];
+                float row_scale = model->csr->row_scales[row_idx];
+
+                /* Distance decay for current offset */
+                float decay = expf(-model->config.alpha * (float)(current_offset - 1));
+
+                for (uint32_t edge = row_start; edge < row_end; edge++) {
+                    uint32_t target = model->csr->targets[edge];
+                    if (target >= vocab_size) continue;
+
+                    float weight = (float)model->csr->weights[edge];
+                    float delta = row_scale * weight * idf * decay;
+
+                    scores[target] += delta;
+                    raw_strength[target] += delta;
+                    if (delta != 0.0f && support_counts[target] < UINT16_MAX) {
+                        support_counts[target]++;
+                    }
+                }
+            }
+
+            /* Compute deferred associations (future offsets) */
+            for (int lookahead = 1; lookahead <= max_lookahead; lookahead++) {
+                uint32_t future_offset = current_offset + lookahead;
+
+                /* Skip if future offset is beyond window */
+                if (future_offset > model->config.window) {
+                    break;
+                }
+
+                /* Find associations at this future offset */
+                row_idx = find_row_index(model, token, future_offset);
+                if (row_idx < 0) {
+                    continue;
+                }
+
+                uint32_t row_start = model->csr->row_offsets[row_idx];
+                uint32_t row_end = model->csr->row_offsets[row_idx + 1];
+                float row_scale = model->csr->row_scales[row_idx];
+
+                /* Distance decay for future offset */
+                float decay = expf(-model->config.alpha * (float)(future_offset - 1));
+
+                /* Residual decay for deferred activation */
+                float defer_decay = powf(residual_decay, (float)lookahead);
+
+                for (uint32_t edge = row_start; edge < row_end; edge++) {
+                    uint32_t target = model->csr->targets[edge];
+                    if (target >= vocab_size) continue;
+
+                    float weight = (float)model->csr->weights[edge];
+                    float contribution = row_scale * weight * idf * decay * defer_decay * residual_blend;
+
+                    /* Add to residual buffer */
+                    add_residual(residuals, target, contribution, lookahead - 1);
+                }
+            }
+        }
+    }
+
+    /* Apply any residuals that are ready to fire (remaining_offset == 0) */
+    apply_and_age_residuals(residuals, scores, vocab_size);
+
+    /* Build predictions array */
+    psam_prediction_t* all_preds = malloc(vocab_size * sizeof(psam_prediction_t));
+    if (!all_preds) {
+        result = PSAM_ERR_OUT_OF_MEMORY;
+        goto cleanup_residuals;
+    }
+
+    for (uint32_t i = 0; i < vocab_size; i++) {
+        all_preds[i].token = i;
+        float raw = raw_strength[i];
+        float bias_component = scores[i] - raw;
+        float contextual = raw;
+        if (support_counts[i] > 1) {
+            contextual *= 1.0f + PSAM_CONSENSUS_GAIN * (float)(support_counts[i] - 1);
+        }
+        float final_score = bias_component + contextual;
+        all_preds[i].score = final_score;
+        all_preds[i].raw_strength = raw;
+        all_preds[i].support_count = support_counts[i];
+        all_preds[i]._reserved = 0;
+        all_preds[i].calibrated_prob = 0.0f;
+    }
+
+    /* Sort by score */
+    qsort(all_preds, vocab_size, sizeof(psam_prediction_t), compare_predictions);
+
+    /* Copy top-K to output */
+    size_t output_count = max_preds < vocab_size ? max_preds : vocab_size;
+    memcpy(out_preds, all_preds, output_count * sizeof(psam_prediction_t));
+
+    result = (int)output_count;
+
+    free(all_preds);
+
+cleanup_residuals:
+    destroy_residual_buffer(residuals);
+    free(scores);
+    free(raw_strength);
+    free(support_counts);
+
+cleanup:
+    psam_lock_unlock_rd(&model->lock);
+
+    return result;
 }

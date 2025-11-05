@@ -56,6 +56,29 @@ class SamplerConfig:
     seed: int = None
 
 
+@dataclass
+class ResidualConfig:
+    """Residual activation configuration for deferred associations"""
+    max_lookahead: int = 3
+    residual_decay: float = 0.8
+    residual_blend: float = 0.4
+    enable: bool = True
+
+
+@dataclass
+class SalienceConfig:
+    """Salience tracking configuration for pop-out anchors"""
+    max_anchors: int = 16
+    ewma_freq_halflife: float = 128.0
+    ewma_contrib_halflife: float = 64.0
+    eta: float = 1.0
+    kappa: float = 0.25
+    beta: float = 0.3
+    pop_decay_distance: float = 256.0
+    min_salience: float = 0.1
+    enable: bool = True
+
+
 # Struct definitions matching C API
 PSAM_LAYER_ID_MAX = 64
 
@@ -66,6 +89,29 @@ class PSAMSampler(ctypes.Structure):
         ("top_k", ctypes.c_int32),
         ("top_p", ctypes.c_float),
         ("seed", ctypes.c_uint64),
+    ]
+
+
+class PSAMResidualConfig(ctypes.Structure):
+    _fields_ = [
+        ("max_lookahead", ctypes.c_int32),
+        ("residual_decay", ctypes.c_float),
+        ("residual_blend", ctypes.c_float),
+        ("enable", ctypes.c_bool),
+    ]
+
+
+class PSAMSalienceConfig(ctypes.Structure):
+    _fields_ = [
+        ("max_anchors", ctypes.c_int32),
+        ("ewma_freq_halflife", ctypes.c_float),
+        ("ewma_contrib_halflife", ctypes.c_float),
+        ("eta", ctypes.c_float),
+        ("kappa", ctypes.c_float),
+        ("beta", ctypes.c_float),
+        ("pop_decay_distance", ctypes.c_float),
+        ("min_salience", ctypes.c_float),
+        ("enable", ctypes.c_bool),
     ]
 
 
@@ -272,6 +318,41 @@ def _configure_library(lib):
     ]
     lib.psam_predict_with_sampler.restype = ctypes.c_int32
 
+    lib.psam_predict_with_residuals.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_size_t,
+        ctypes.POINTER(PSAMSampler),
+        ctypes.POINTER(PSAMResidualConfig),
+        ctypes.POINTER(PSAMPrediction),
+        ctypes.c_size_t,
+    ]
+    lib.psam_predict_with_residuals.restype = ctypes.c_int32
+
+    # Stateful generator
+    lib.psam_create_generator.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(PSAMResidualConfig),
+        ctypes.POINTER(PSAMSalienceConfig),
+        ctypes.POINTER(PSAMSampler),
+    ]
+    lib.psam_create_generator.restype = ctypes.c_void_p
+
+    lib.psam_destroy_generator.argtypes = [ctypes.c_void_p]
+    lib.psam_destroy_generator.restype = None
+
+    lib.psam_generator_predict.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint32),
+        ctypes.c_size_t,
+        ctypes.POINTER(PSAMPrediction),
+        ctypes.c_size_t,
+    ]
+    lib.psam_generator_predict.restype = ctypes.c_int32
+
+    lib.psam_generator_reset.argtypes = [ctypes.c_void_p]
+    lib.psam_generator_reset.restype = ctypes.c_int32
+
     lib.psam_explain.argtypes = [
         ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_uint32),
@@ -469,7 +550,8 @@ class PSAM:
         _check_error(result, "finalize_training")
 
     def predict(
-        self, context: List[int], max_predictions: Optional[int] = None, sampler: Optional[SamplerConfig] = None
+        self, context: List[int], max_predictions: Optional[int] = None, sampler: Optional[SamplerConfig] = None,
+        residual_config: Optional[ResidualConfig] = None
     ) -> Tuple[List[int], np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """
         Generate predictions for a given context
@@ -478,6 +560,7 @@ class PSAM:
             context: List of token IDs representing the context
             max_predictions: Maximum number of predictions (default: top_k)
             sampler: Optional sampler configuration for temperature control
+            residual_config: Optional residual activation configuration
 
         Returns:
             Tuple of (token_ids, scores, raw_strengths, support_counts, probabilities)
@@ -487,7 +570,31 @@ class PSAM:
         context_array = (ctypes.c_uint32 * len(context))(*context)
         predictions = (PSAMPrediction * limit)()
 
-        if sampler is not None:
+        # Handle residual prediction if requested
+        if residual_config is not None and residual_config.enable:
+            residual_struct = PSAMResidualConfig()
+            residual_struct.max_lookahead = residual_config.max_lookahead
+            residual_struct.residual_decay = residual_config.residual_decay
+            residual_struct.residual_blend = residual_config.residual_blend
+            residual_struct.enable = True
+
+            # Prepare sampler if provided
+            sampler_ptr = None
+            if sampler is not None:
+                sampler_struct = PSAMSampler()
+                sampler_struct.transform = sampler.transform
+                sampler_struct.temperature = sampler.temperature
+                sampler_struct.top_k = sampler.top_k
+                sampler_struct.top_p = sampler.top_p
+                sampler_struct.seed = sampler.seed if sampler.seed is not None else np.random.randint(0, 0xFFFFFFFF)
+                sampler_ptr = ctypes.byref(sampler_struct)
+
+            num_preds = self._lib.psam_predict_with_residuals(
+                self._handle, context_array, len(context),
+                sampler_ptr, ctypes.byref(residual_struct),
+                predictions, limit
+            )
+        elif sampler is not None:
             sampler_struct = PSAMSampler()
             sampler_struct.transform = sampler.transform
             sampler_struct.temperature = sampler.temperature
@@ -905,3 +1012,148 @@ def save_composite_manifest(
         layer_array if layer_array is not None else None,
     )
     _check_error(result, "save_composite_manifest")
+
+
+class PSAMGenerator:
+    """
+    Stateful PSAM generator with persistent residual buffer
+
+    This maintains residual state across sequential predictions, enabling
+    proper deferred activation during generation.
+
+    Example:
+        >>> psam = PSAM(vocab_size=1000, window=8, top_k=20)
+        >>> # ... train and finalize ...
+        >>> residual_config = ResidualConfig(enable=True, max_lookahead=3)
+        >>> generator = PSAMGenerator(psam, residual_config=residual_config)
+        >>>
+        >>> context = [1, 2, 3]
+        >>> for _ in range(10):
+        >>>     token_ids, scores, _, _, _ = generator.predict(context)
+        >>>     next_token = token_ids[0]
+        >>>     context.append(next_token)
+        >>>
+        >>> generator.destroy()
+    """
+
+    def __init__(
+        self,
+        model: PSAM,
+        residual_config: Optional[ResidualConfig] = None,
+        salience_config: Optional[SalienceConfig] = None,
+        sampler: Optional[SamplerConfig] = None
+    ):
+        """
+        Create a stateful generator
+
+        Args:
+            model: The PSAM model to use (must be finalized)
+            residual_config: Residual activation configuration (optional)
+            salience_config: Salience tracking configuration (optional)
+            sampler: Sampler configuration (optional)
+        """
+        self._lib = _load_library()
+        self._model = model  # Keep reference to prevent GC
+
+        # Convert configs to C structs
+        c_residual_config = None
+        if residual_config and residual_config.enable:
+            c_residual_config = PSAMResidualConfig()
+            c_residual_config.max_lookahead = residual_config.max_lookahead
+            c_residual_config.residual_decay = residual_config.residual_decay
+            c_residual_config.residual_blend = residual_config.residual_blend
+            c_residual_config.enable = residual_config.enable
+
+        c_salience_config = None
+        if salience_config and salience_config.enable:
+            c_salience_config = PSAMSalienceConfig()
+            c_salience_config.max_anchors = salience_config.max_anchors
+            c_salience_config.ewma_freq_halflife = salience_config.ewma_freq_halflife
+            c_salience_config.ewma_contrib_halflife = salience_config.ewma_contrib_halflife
+            c_salience_config.eta = salience_config.eta
+            c_salience_config.kappa = salience_config.kappa
+            c_salience_config.beta = salience_config.beta
+            c_salience_config.pop_decay_distance = salience_config.pop_decay_distance
+            c_salience_config.min_salience = salience_config.min_salience
+            c_salience_config.enable = salience_config.enable
+
+        c_sampler = None
+        if sampler:
+            c_sampler = PSAMSampler()
+            c_sampler.transform = sampler.transform
+            c_sampler.temperature = sampler.temperature
+            c_sampler.top_k = sampler.top_k
+            c_sampler.top_p = sampler.top_p
+            c_sampler.seed = sampler.seed if sampler.seed is not None else 0
+
+        self._handle = self._lib.psam_create_generator(
+            model._handle,
+            ctypes.byref(c_residual_config) if c_residual_config else None,
+            ctypes.byref(c_salience_config) if c_salience_config else None,
+            ctypes.byref(c_sampler) if c_sampler else None,
+        )
+
+        if not self._handle:
+            raise PSAMError("Failed to create PSAM generator")
+
+    def __del__(self):
+        """Cleanup when object is destroyed"""
+        self.destroy()
+
+    def destroy(self):
+        """Explicitly destroy the generator and free resources"""
+        if hasattr(self, "_handle") and self._handle:
+            self._lib.psam_destroy_generator(self._handle)
+            self._handle = None
+
+    def predict(
+        self, context: List[int], max_predictions: Optional[int] = None
+    ) -> Tuple[List[int], np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        """
+        Predict next token with stateful residual tracking
+
+        Args:
+            context: List of token IDs representing the context
+            max_predictions: Maximum number of predictions to return (default: model's top_k)
+
+        Returns:
+            Tuple of:
+                - token_ids: List of predicted token IDs (sorted by score)
+                - scores: Array of final scores
+                - raw_strengths: Array of raw contextual strengths
+                - support_counts: Array of support counts (number of supporting associations)
+                - calibrated_probs: None (not computed for generator predictions)
+        """
+        if max_predictions is None:
+            max_predictions = self._model._top_k
+
+        context_array = (ctypes.c_uint32 * len(context))(*context)
+        predictions = (PSAMPrediction * max_predictions)()
+
+        count = self._lib.psam_generator_predict(
+            self._handle,
+            context_array,
+            len(context),
+            predictions,
+            max_predictions,
+        )
+
+        if count < 0:
+            _check_error(count, "generator_predict")
+
+        # Extract results
+        token_ids = [predictions[i].token_id for i in range(count)]
+        scores = np.array([predictions[i].score for i in range(count)], dtype=np.float32)
+        raw_strengths = np.array([predictions[i].raw_strength for i in range(count)], dtype=np.float32)
+        support_counts = np.array([predictions[i].support_count for i in range(count)], dtype=np.uint16)
+
+        return token_ids, scores, raw_strengths, support_counts, None
+
+    def reset(self):
+        """
+        Reset the residual buffer
+
+        Call this to clear accumulated residuals when starting a new generation sequence.
+        """
+        result = self._lib.psam_generator_reset(self._handle)
+        _check_error(result, "generator_reset")

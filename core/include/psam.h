@@ -43,6 +43,12 @@ typedef struct psam_model psam_model_t;
 typedef struct psam_composite psam_composite_t;
 
 /**
+ * Opaque handle to a stateful generator with residual tracking.
+ * Maintains residual buffer across sequential predictions.
+ */
+typedef struct psam_generator psam_generator_t;
+
+/**
  * Configuration for model creation.
  */
 typedef struct {
@@ -97,6 +103,33 @@ typedef struct {
     float top_p;                      /* Nucleus sampling threshold (default: 0.95) */
     uint64_t seed;                    /* Random seed for reproducibility (default: 42) */
 } psam_sampler_t;
+
+/**
+ * Residual activation configuration for deferred associations.
+ * Enables tracking and applying associations that fire at future positions.
+ */
+typedef struct {
+    int max_lookahead;                /* How many positions ahead to compute (default: 3) */
+    float residual_decay;             /* Decay factor for deferred activations (default: 0.8) */
+    float residual_blend;             /* Weight for residual vs current scores (default: 0.4) */
+    bool enable;                      /* Enable residual activation (default: false) */
+} psam_residual_config_t;
+
+/**
+ * Salience tracking configuration for pop-out anchors.
+ * Tracks tokens that are "gaining attention" and lets them vote from long range.
+ */
+typedef struct {
+    int max_anchors;                  /* Max number of salient anchors to track (default: 16) */
+    float ewma_freq_halflife;         /* Half-life for frequency EWMA in tokens (default: 128) */
+    float ewma_contrib_halflife;      /* Half-life for contribution EWMA in tokens (default: 64) */
+    float eta;                        /* Weight for pop-out signal (default: 1.0) */
+    float kappa;                      /* Weight for IDF novelty (default: 0.25) */
+    float beta;                       /* Anchor blend weight (default: 0.3) */
+    float pop_decay_distance;         /* Long-range penalty distance (default: 256) */
+    float min_salience;               /* Minimum salience to become anchor (default: 0.1) */
+    bool enable;                      /* Enable salience tracking (default: false) */
+} psam_salience_config_t;
 
 /**
  * Lightweight descriptor for inspecting layers attached to a composite.
@@ -364,6 +397,42 @@ PSAM_API int psam_predict_with_sampler(
 );
 
 /**
+ * Inference with residual/deferred activation support.
+ * Tracks associations that would fire at future offsets and applies them
+ * when those positions are reached during generation.
+ *
+ * This solves offset mismatch problems in Q&A and other structured tasks where
+ * context tokens need to influence predictions at specific future positions.
+ *
+ * @param model Trained model (must be finalized)
+ * @param context Array of context token IDs
+ * @param context_len Number of tokens in context
+ * @param sampler Sampler config (NULL uses defaults)
+ * @param residual_config Residual activation config (NULL disables residuals)
+ * @param out_preds Output buffer for predictions
+ * @param max_preds Maximum predictions to return
+ * @return Number of predictions on success (>= 0), negative error code otherwise
+ *
+ * Example:
+ *   psam_residual_config_t res_config = {
+ *       .max_lookahead = 3,
+ *       .residual_decay = 0.8f,
+ *       .residual_blend = 0.4f,
+ *       .enable = true
+ *   };
+ *   int n = psam_predict_with_residuals(model, context, 6, NULL, &res_config, preds, 32);
+ */
+PSAM_API int psam_predict_with_residuals(
+    psam_model_t* model,
+    const uint32_t* context,
+    size_t context_len,
+    const psam_sampler_t* sampler,
+    const psam_residual_config_t* residual_config,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+);
+
+/**
  * Batch inference: process multiple contexts in one call.
  * Internally parallelized for high throughput.
  *
@@ -396,6 +465,87 @@ PSAM_API psam_error_t psam_predict_batch(
     size_t max_preds_per_context,
     int* out_counts
 );
+
+/* ============================ Stateful Generation with Residuals ============================ */
+
+/**
+ * Create a stateful generator with residual tracking.
+ * The generator maintains a residual buffer that persists across predictions,
+ * enabling proper deferred activation during sequential generation.
+ *
+ * @param model Trained model (must be finalized)
+ * @param residual_config Residual configuration (NULL to disable residuals)
+ * @param sampler Optional sampler config (NULL uses defaults)
+ * @return Generator handle or NULL on failure
+ *
+ * Example:
+ *   psam_residual_config_t res_config = {
+ *       .max_lookahead = 4,
+ *       .residual_decay = 0.85f,
+ *       .residual_blend = 0.6f,
+ *       .enable = true
+ *   };
+ *   psam_generator_t* gen = psam_create_generator(model, &res_config, &sal_config, NULL);
+ */
+PSAM_API psam_generator_t* psam_create_generator(
+    psam_model_t* model,
+    const psam_residual_config_t* residual_config,
+    const psam_salience_config_t* salience_config,
+    const psam_sampler_t* sampler
+);
+
+/**
+ * Destroy a stateful generator and free resources.
+ * Safe to call with NULL pointer.
+ *
+ * @param generator Generator to destroy
+ */
+PSAM_API void psam_destroy_generator(psam_generator_t* generator);
+
+/**
+ * Generate predictions with stateful residual tracking.
+ * Residuals computed in previous calls are aged and applied automatically.
+ *
+ * @param generator Stateful generator
+ * @param context Current context tokens
+ * @param context_len Number of tokens in context
+ * @param out_preds Output buffer for predictions
+ * @param max_preds Maximum predictions to return
+ * @return Number of predictions (>= 0) or negative error code
+ *
+ * Example:
+ *   // Generate sequence token by token
+ *   uint32_t context[] = {1, 2, 3};
+ *   size_t context_len = 3;
+ *
+ *   for (int i = 0; i < max_tokens; i++) {
+ *       psam_prediction_t preds[20];
+ *       int n = psam_generator_predict(gen, context, context_len, preds, 20);
+ *       if (n <= 0) break;
+ *
+ *       // Sample next token
+ *       uint32_t next = sample_from_predictions(preds, n);
+ *
+ *       // Extend context for next iteration
+ *       context[context_len++] = next;
+ *   }
+ */
+PSAM_API int psam_generator_predict(
+    psam_generator_t* generator,
+    const uint32_t* context,
+    size_t context_len,
+    psam_prediction_t* out_preds,
+    size_t max_preds
+);
+
+/**
+ * Reset the generator's residual buffer.
+ * Useful for starting a new generation sequence without recreating the generator.
+ *
+ * @param generator Generator to reset
+ * @return PSAM_OK on success, error code otherwise
+ */
+PSAM_API psam_error_t psam_generator_reset(psam_generator_t* generator);
 
 /**
  * Explain why a specific token was predicted for the given context.
