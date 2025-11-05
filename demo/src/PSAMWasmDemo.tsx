@@ -639,10 +639,30 @@ const PSAMWasmDemo = () => {
       // Use calibrated probabilities from sampler
       const probs = Array.from(result.probabilities);
 
-      // Sample token based on current sampling mode
-      const selectedToken = sampleToken(result.ids, probs);
+      // Select token based on current sampling mode (matching "Generate Next" behavior)
+      let selectedToken: number;
+      let word: string;
+
+      if (samplingMode === 'greedy') {
+        // Greedy: always pick top prediction
+        selectedToken = result.ids[0];
+        word = vocab[selectedToken] || `<${selectedToken}>`;
+      } else {
+        // Stochastic: generate samples and pick the winner
+        const samples = generateStochasticSamples(result.ids, probs, 100);
+        if (samples.length > 0) {
+          word = samples[0].word;
+          // Find the token ID for this word
+          const tokenId = vocab.indexOf(word);
+          selectedToken = tokenId >= 0 ? tokenId : result.ids[0];
+        } else {
+          // Fallback
+          selectedToken = result.ids[0];
+          word = vocab[selectedToken] || `<${selectedToken}>`;
+        }
+      }
+
       const selectedIdx = result.ids.indexOf(selectedToken);
-      const word = vocab[selectedToken] || `<${selectedToken}>`;
 
       const confidence = result.ids.length >= 2 ? result.scores[0] / result.scores[1] : Infinity;
 
@@ -696,9 +716,9 @@ const PSAMWasmDemo = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 md:p-8">
       <div className="bg-white rounded-lg shadow-lg p-4 md:p-8 mb-6">
-          <div className="flex items-center justify-between mb-6">
-            <h1 className="text-3xl font-bold text-gray-800">PSAM WASM Demo</h1>
-            <div className="flex items-center gap-2 bg-green-100 px-3 py-1 rounded-full">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-6">
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-800">PSAM WASM Demo</h1>
+            <div className="flex items-center gap-2 bg-green-100 px-3 py-1 rounded-full w-fit">
               <Zap className="w-4 h-4 text-green-600" />
               <span className="text-sm font-medium text-green-800">WebAssembly Powered</span>
             </div>
@@ -941,7 +961,7 @@ const PSAMWasmDemo = () => {
               </div>
 
               {/* Action Buttons */}
-              <div className="flex gap-3 mb-6">
+              <div className="flex flex-col sm:flex-row gap-3 mb-6">
                 <button
                   onClick={() => {
                     if (!psam || !trained || predictions.length === 0) return;
@@ -952,21 +972,13 @@ const PSAMWasmDemo = () => {
                       // Greedy: always pick top prediction
                       selectedWord = predictions[0].word;
                     } else {
-                      // Stochastic: sample from cached stochastic samples
+                      // Stochastic: use the top one from cached samples (already drawn)
                       if (stochasticSamples.length > 0) {
-                        // Build weighted array based on counts
-                        const weightedChoices: string[] = [];
-                        stochasticSamples.forEach(sample => {
-                          for (let i = 0; i < sample.count; i++) {
-                            weightedChoices.push(sample.word);
-                          }
-                        });
-
-                        // Pick randomly from the weighted choices
-                        const randomIndex = Math.floor(Math.random() * weightedChoices.length);
-                        selectedWord = weightedChoices[randomIndex];
+                        // The samples are already sorted by count (most frequent first)
+                        // So just pick the winner from the 100 draws we already did
+                        selectedWord = stochasticSamples[0].word;
                       } else {
-                        // Fallback: use live sampling
+                        // Fallback: use live sampling (shouldn't normally happen)
                         const ids = predictions.map(p => p.token);
                         const probs = predictions.map(p => p.probability);
                         const selectedToken = sampleToken(ids, probs);
@@ -978,18 +990,20 @@ const PSAMWasmDemo = () => {
                     setInferenceInput(inferenceInput + ' ' + selectedWord);
                   }}
                   disabled={!trained || predictions.length === 0}
-                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+                  className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                   <Zap className="w-5 h-5" />
-                  Generate Next
+                  <span className="hidden sm:inline">Generate Next</span>
+                  <span className="sm:hidden">Next</span>
                 </button>
                 <button
                   onClick={handleGenerate}
                   disabled={!trained || isGenerating}
-                  className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+                  className="flex-1 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
                 >
                   <RefreshCw className={`w-5 h-5 ${isGenerating ? 'animate-spin' : ''}`} />
-                  Auto-Generate (10 tokens)
+                  <span className="hidden sm:inline">Auto-Generate (10)</span>
+                  <span className="sm:hidden">Auto (10)</span>
                 </button>
               </div>
 
@@ -1077,7 +1091,7 @@ const PSAMWasmDemo = () => {
                       )}
                     </div>
                     <div className="text-xs text-gray-600 mb-3">
-                      100 samples from distribution
+                      Results from 100 draws (top one wins)
                     </div>
 
                     {/* Temperature Control */}
