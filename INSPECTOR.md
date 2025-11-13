@@ -34,6 +34,16 @@ Interactive web-based tool for visualizing and analyzing PSAM models.
 - Clear and restart functionality
 - View predictions before generating
 
+### ✨ Interactive Token Highlighting
+- **Bidirectional Sync**: Click tokens in visualization or text to highlight both
+- **Clickable Token Boxes**: Generated text displayed as interactive token boxes
+- **Auto-Centering**: Smooth scroll animation centers selected tokens in view
+- **Visual States**:
+  - Context words: Gray boxes (non-interactive)
+  - Generated tokens: Indigo boxes (clickable)
+  - Selected token: Amber with ring effect
+- **Smooth Animation**: 500ms ease-out cubic scroll to center
+
 ## Architecture
 
 ### C Core (`core/src/core/inspect.c`)
@@ -50,8 +60,12 @@ psam_error_t psam_get_config(const psam_model_t* model, psam_config_t* out_confi
 - Memory management with malloc/free
 
 ### React Components
-- **PSAMInspector**: Main app (888 lines)
-- **PSAMRailwayViewer**: Canvas visualization (567 lines)
+- **PSAMInspector**: Main app with state management and text generation
+- **PSAMRailwayViewer**: Canvas visualization with selection sync
+- **Bidirectional Communication**:
+  - Props: `selectedTokenIndex` flows down via `data` prop
+  - Callbacks: `onTokenSelect` flows up to parent
+  - Custom Events: Cross-component `selectToken` events for text clicks
 
 ## Quick Start
 
@@ -69,9 +83,13 @@ Navigate to `/inspector` route.
 
 **Normalization**: Connections normalized by max contribution.
 
-**Colors**: 
+**Colors**:
 - Positive: Green → Yellow → Orange → Red
 - Negative: Blue → Purple
+
+**Animation**: Smooth scrolling uses `requestAnimationFrame` with ease-out cubic easing for 500ms duration.
+
+**Token Selection**: Synchronized via React state (`selectedTokenIndex`) and DOM custom events (`selectToken`).
 
 ## Files Added
 

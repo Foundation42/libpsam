@@ -443,6 +443,9 @@ const PSAMInspector = () => {
     }
   }, [currentModel, wasmInspector, contextInput, generatedText, textToTokenIds, isGenerating, generationHistory]);
 
+  // Track selected token for synchronization
+  const [selectedTokenIndex, setSelectedTokenIndex] = useState<number | null>(null);
+
   // Convert generation history to railway track data
   const buildRailwayData = useCallback(() => {
     if (!generationHistory.length || !currentModel?.vocab) return null;
@@ -504,8 +507,8 @@ const PSAMInspector = () => {
       terms: item.explanation.terms,
     }));
 
-    return { tokens, connections, explanations, vocab: currentModel.vocab };
-  }, [generationHistory, currentModel?.vocab]);
+    return { tokens, connections, explanations, vocab: currentModel.vocab, selectedTokenIndex };
+  }, [generationHistory, currentModel?.vocab, selectedTokenIndex]);
 
   const railwayData = buildRailwayData();
 
@@ -846,13 +849,39 @@ const PSAMInspector = () => {
                           )}
 
                           {/* Generated Text */}
-                          {generatedText && (
+                          {generatedText && generationHistory.length > 0 && (
                             <div className="mb-6">
                               <h4 className="text-lg font-semibold text-white mb-3">Generated Text</h4>
                               <div className="bg-slate-700 rounded-lg p-4 min-h-32">
-                                <p className="text-white text-lg leading-relaxed">
-                                  {generatedText}
-                                </p>
+                                <div className="flex flex-wrap gap-1 text-lg leading-relaxed">
+                                  {/* Show initial context words */}
+                                  {contextInput.split(/\s+/).map((word, idx) => (
+                                    <span
+                                      key={`context-${idx}`}
+                                      className="px-1.5 py-0.5 rounded bg-slate-600 text-slate-300 cursor-default"
+                                    >
+                                      {word}
+                                    </span>
+                                  ))}
+                                  {/* Show generated tokens as clickable boxes */}
+                                  {generationHistory.map((item, idx) => (
+                                    <span
+                                      key={idx}
+                                      onClick={() => {
+                                        // Trigger selection in railway viewer
+                                        const event = new CustomEvent('selectToken', { detail: idx });
+                                        window.dispatchEvent(event);
+                                      }}
+                                      className={`px-1.5 py-0.5 rounded cursor-pointer transition-colors ${
+                                        railwayData?.selectedTokenIndex === idx
+                                          ? 'bg-amber-500 text-white ring-2 ring-amber-300'
+                                          : 'bg-indigo-600 text-white hover:bg-indigo-500'
+                                      }`}
+                                    >
+                                      {item.word}
+                                    </span>
+                                  ))}
+                                </div>
                               </div>
                             </div>
                           )}
@@ -867,7 +896,10 @@ const PSAMInspector = () => {
                                 </span>
                               </h4>
                               <div className="bg-slate-700 rounded-lg overflow-hidden">
-                                <PSAMRailwayViewer data={railwayData} />
+                                <PSAMRailwayViewer
+                                  data={railwayData}
+                                  onTokenSelect={setSelectedTokenIndex}
+                                />
                               </div>
                             </div>
                           )}

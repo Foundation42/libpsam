@@ -31,13 +31,15 @@ interface PSAMData {
     }>;
   }>;
   vocab?: { [tokenId: number]: string };
+  selectedTokenIndex?: number | null;
 }
 
 interface Props {
   data: PSAMData;
+  onTokenSelect?: (index: number | null) => void;
 }
 
-const PSAMRailwayViewer = ({ data }: Props) => {
+const PSAMRailwayViewer = ({ data, onTokenSelect }: Props) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [offset, setOffset] = useState(200);
   const [verticalOffset, setVerticalOffset] = useState(0);
@@ -48,9 +50,71 @@ const PSAMRailwayViewer = ({ data }: Props) => {
   const [hoveredToken, setHoveredToken] = useState<number | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
+  // Calculate constants (needed by useEffect hooks)
   const STATION_SPACING = 200 * zoom;
   const CENTER_Y = 300 + verticalOffset;
   const LANE_HEIGHT = 80 * zoom;
+
+  // Sync selected token from parent and center it
+  useEffect(() => {
+    if (data.selectedTokenIndex !== undefined && data.selectedTokenIndex !== selectedToken) {
+      setSelectedToken(data.selectedTokenIndex);
+
+      // Center the selected token
+      if (data.selectedTokenIndex !== null) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const tokenX = data.selectedTokenIndex * STATION_SPACING + 100;
+          const centerX = canvas.width / 2;
+          const targetOffset = centerX - tokenX;
+          setOffset(targetOffset);
+        }
+      }
+    }
+  }, [data.selectedTokenIndex, STATION_SPACING, selectedToken]);
+
+  // Listen for external selection events
+  useEffect(() => {
+    const handleSelectToken = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const tokenIdx = customEvent.detail;
+      setSelectedToken(tokenIdx);
+      onTokenSelect?.(tokenIdx);
+
+      // Center the token when selected from text
+      if (tokenIdx !== null) {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const tokenX = tokenIdx * STATION_SPACING + 100;
+          const centerX = canvas.width / 2;
+          const targetOffset = centerX - tokenX;
+
+          // Smooth scroll animation
+          const startOffset = offset;
+          const distance = targetOffset - startOffset;
+          const duration = 500; // ms
+          const startTime = Date.now();
+
+          const animate = () => {
+            const elapsed = Date.now() - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            // Ease out cubic
+            const easeProgress = 1 - Math.pow(1 - progress, 3);
+            setOffset(startOffset + distance * easeProgress);
+
+            if (progress < 1) {
+              requestAnimationFrame(animate);
+            }
+          };
+
+          requestAnimationFrame(animate);
+        }
+      }
+    };
+
+    window.addEventListener('selectToken', handleSelectToken);
+    return () => window.removeEventListener('selectToken', handleSelectToken);
+  }, [onTokenSelect, STATION_SPACING, offset]);
 
   // Heatmap color based on strength (0-1)
   const getHeatmapColor = (strength: number, type: string) => {
@@ -383,7 +447,9 @@ const PSAMRailwayViewer = ({ data }: Props) => {
 
   const handleClick = () => {
     if (hoveredToken !== null) {
-      setSelectedToken(selectedToken === hoveredToken ? null : hoveredToken);
+      const newSelection = selectedToken === hoveredToken ? null : hoveredToken;
+      setSelectedToken(newSelection);
+      onTokenSelect?.(newSelection);
     }
   };
 
