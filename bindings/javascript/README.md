@@ -131,6 +131,58 @@ base.addLayer('legal', legalModel, 1.5);
 base.updateLayerWeight('legal', 2.0);
 ```
 
+### Stateful Generator (Native only)
+
+For sequential generation with entity tracking and long-range dependencies:
+
+```typescript
+import { PSAMNative, PSAMGeneratorNative } from '@foundation42/libpsam';
+
+// Load or create a trained model
+const psam = PSAMNative.load('model.psam');
+
+// Create stateful generator (perplexity boosting enabled by default)
+const generator = new PSAMGeneratorNative(psam);
+
+// Generate with persistent state tracking
+const context = [1, 2, 3];  // "What is the dog doing?"
+for (let i = 0; i < 10; i++) {
+  const result = generator.predict(context, 10);
+  const nextToken = result.ids[0];
+  context.push(nextToken);
+
+  if (nextToken === END_TOKEN) break;
+}
+
+// Optional: Enable residual activation for offset handling
+const generatorWithResiduals = new PSAMGeneratorNative(
+  psam,
+  { enable: true, maxLookahead: 5, residualDecay: 0.85, residualBlend: 0.6 }
+);
+
+// Optional: Enable salience tracking for long sequences (100+ tokens)
+const generatorWithSalience = new PSAMGeneratorNative(
+  psam,
+  null,  // no residuals
+  { enable: true, maxAnchors: 16, beta: 0.3 }
+);
+
+// Reset state between sequences
+generator.reset();
+
+// Cleanup
+generator.destroy();
+```
+
+**Key Features:**
+- 🎯 **Perplexity Boosting** - Automatically tracks informative tokens (85.7% → 100% on Q&A)
+- 🔄 **Residual Activation** - Handles offset mismatches (optional)
+- 🧠 **Salience Tracking** - Long-range dependencies for 100+ token sequences (optional)
+
+See [Generator Documentation](../../docs/GENERATOR.md) for details.
+
+**Note:** WASM support for the generator is planned but not yet implemented.
+
 ### Persistence
 
 ```typescript

@@ -24,6 +24,9 @@ import type {
   SaveCompositeOptions,
   CompositeLayerDescriptor,
   SamplerConfig,
+  ResidualConfig,
+  SalienceConfig,
+  PSAMGenerator,
 } from './types.js';
 import { LogitTransform } from './types.js';
 
@@ -178,6 +181,8 @@ const EXPLAIN_RESULT_SIZE = 16; // sizeof(psam_explain_result_t)
 const PSAM_LAYER_ID_MAX = 64;
 const COMPOSITE_LAYER_INFO_SIZE = 72; // Updated: 64 (id) + 4 (weight) + 4 (bias)
 const SAMPLER_SIZE = 24; // sizeof(psam_sampler_t): 4 (transform) + 4 (temp) + 4 (top_k) + 4 (top_p) + 8 (seed)
+const RESIDUAL_CONFIG_SIZE = 16; // sizeof(psam_residual_config_t): 4 (max_lookahead) + 4 (decay) + 4 (blend) + 1 (enable) + 3 (padding)
+const SALIENCE_CONFIG_SIZE = 40; // sizeof(psam_salience_config_t): 4*8 fields + 1 bool + 3 padding
 const is64Bit = process.arch === 'x64' || process.arch === 'arm64';
 const SIZE_OF_LAYER_FILE_STRUCT = is64Bit ? 24 : 12;
 const textDecoder = new TextDecoder();
@@ -295,6 +300,10 @@ function loadLibrary(libraryPath?: string): any {
       psam_get_stats: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
       psam_error_string: { args: [FFIType.i32], returns: FFIType.cstring },
       psam_version: { args: [], returns: FFIType.cstring },
+      psam_create_generator: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.ptr },
+      psam_generator_predict: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
+      psam_generator_reset: { args: [FFIType.ptr], returns: FFIType.i32 },
+      psam_destroy_generator: { args: [FFIType.ptr], returns: FFIType.void },
     });
   } else if (FFI) {
     // Node.js ffi-napi
@@ -328,6 +337,10 @@ function loadLibrary(libraryPath?: string): any {
       psam_get_stats: ['int32', ['pointer', 'pointer']],
       psam_error_string: ['string', ['int32']],
       psam_version: ['string', []],
+      psam_create_generator: ['pointer', ['pointer', 'pointer', 'pointer', 'pointer']],
+      psam_generator_predict: ['int32', ['pointer', 'pointer', 'uint64', 'pointer', 'uint64']],
+      psam_generator_reset: ['int32', ['pointer']],
+      psam_destroy_generator: ['void', ['pointer']],
     });
   } else {
     throw new Error('No FFI implementation available');
@@ -834,5 +847,158 @@ export class LayeredCompositeNative implements LayeredComposite {
       throw new Error(`Failed to load composite from ${path}`);
     }
     return new LayeredCompositeNative(lib, handle, undefined, 32);
+  }
+}
+
+/* ============================ Generator Helpers ============================ */
+
+function serializeResidualConfig(config: ResidualConfig | null | undefined): Uint8Array | null {
+  if (!config || !config.enable) {
+    return null;
+  }
+
+  const buffer = new Uint8Array(RESIDUAL_CONFIG_SIZE);
+  const view = new DataView(buffer.buffer);
+
+  // psam_residual_config_t layout:
+  // int max_lookahead (offset 0)
+  // float residual_decay (offset 4)
+  // float residual_blend (offset 8)
+  // bool enable (offset 12)
+  // padding (offset 13-15)
+
+  view.setInt32(0, config.maxLookahead ?? 5, true);
+  view.setFloat32(4, config.residualDecay ?? 0.85, true);
+  view.setFloat32(8, config.residualBlend ?? 0.6, true);
+  view.setUint8(12, 1); // enable = true
+
+  return buffer;
+}
+
+function serializeSalienceConfig(config: SalienceConfig | null | undefined): Uint8Array | null {
+  if (!config || !config.enable) {
+    return null;
+  }
+
+  const buffer = new Uint8Array(SALIENCE_CONFIG_SIZE);
+  const view = new DataView(buffer.buffer);
+
+  // psam_salience_config_t layout:
+  // int max_anchors (offset 0)
+  // float ewma_freq_halflife (offset 4)
+  // float ewma_contrib_halflife (offset 8)
+  // float eta (offset 12)
+  // float kappa (offset 16)
+  // float beta (offset 20)
+  // float pop_decay_distance (offset 24)
+  // float min_salience (offset 28)
+  // bool enable (offset 32)
+  // padding (offset 33-35)
+
+  view.setInt32(0, config.maxAnchors ?? 16, true);
+  view.setFloat32(4, config.ewmaFreqHalflife ?? 128.0, true);
+  view.setFloat32(8, config.ewmaContribHalflife ?? 64.0, true);
+  view.setFloat32(12, config.eta ?? 1.0, true);
+  view.setFloat32(16, config.kappa ?? 0.25, true);
+  view.setFloat32(20, config.beta ?? 0.3, true);
+  view.setFloat32(24, config.popDecayDistance ?? 256.0, true);
+  view.setFloat32(28, config.minSalience ?? 0.1, true);
+  view.setUint8(32, 1); // enable = true
+
+  return buffer;
+}
+
+/* ============================ PSAMGeneratorNative Class ============================ */
+
+/**
+ * Native stateful generator implementation
+ *
+ * Maintains persistent state across generation steps for improved entity tracking
+ * and long-range dependencies. Always includes perplexity boosting; optionally
+ * adds residual activation and salience tracking.
+ */
+export class PSAMGeneratorNative implements PSAMGenerator {
+  private handle: any;
+  private lib: any;
+  private baseTopK: number;
+
+  constructor(
+    model: PSAMNative,
+    residualConfig?: ResidualConfig,
+    salienceConfig?: SalienceConfig,
+    sampler?: SamplerConfig,
+    libraryPath?: string
+  ) {
+    this.lib = loadLibrary(libraryPath);
+    this.baseTopK = model.topK;
+
+    const symbols = this.lib.symbols || this.lib;
+
+    const residualBuffer = serializeResidualConfig(residualConfig ?? null);
+    const salienceBuffer = serializeSalienceConfig(salienceConfig ?? null);
+    const samplerBuffer = serializeSampler(sampler ?? null);
+
+    this.handle = symbols.psam_create_generator(
+      model.getNativeHandle(),
+      residualBuffer ?? 0,
+      salienceBuffer ?? 0,
+      samplerBuffer ?? 0
+    );
+
+    if (!this.handle) {
+      throw new Error('Failed to create PSAM generator (is the model finalized?)');
+    }
+  }
+
+  predict(context: TokenId[], maxPredictions?: number): InferenceResult {
+    const symbols = this.lib.symbols || this.lib;
+    const limit = maxPredictions ?? this.baseTopK;
+
+    const outBuffer = new Uint8Array(limit * PREDICTION_SIZE);
+    const contextArray = new Uint32Array(context);
+
+    const numPreds = symbols.psam_generator_predict(
+      this.handle,
+      contextArray,
+      BigInt(contextArray.length),
+      outBuffer,
+      BigInt(limit)
+    );
+
+    if (numPreds < 0) {
+      checkError(numPreds, 'generator_predict', this.lib);
+    }
+
+    const ids: TokenId[] = [];
+    const scores = new Float32Array(numPreds);
+    const rawStrengths = new Float32Array(numPreds);
+    const supportCounts = new Uint16Array(numPreds);
+    const probabilities = new Float32Array(numPreds);
+    const view = new DataView(outBuffer.buffer);
+
+    for (let i = 0; i < numPreds; i++) {
+      const offset = i * PREDICTION_SIZE;
+      ids.push(view.getUint32(offset, true));
+      scores[i] = view.getFloat32(offset + 4, true);
+      rawStrengths[i] = view.getFloat32(offset + 8, true);
+      supportCounts[i] = view.getUint16(offset + 12, true);
+      probabilities[i] = view.getFloat32(offset + 16, true);
+    }
+
+    return { ids, scores, rawStrengths, supportCounts, probabilities };
+  }
+
+  reset(): void {
+    const symbols = this.lib.symbols || this.lib;
+    const result = symbols.psam_generator_reset(this.handle);
+    checkError(result, 'generator_reset', this.lib);
+  }
+
+  destroy(): void {
+    if (!this.handle) return;
+
+    const symbols = this.lib.symbols || this.lib;
+    symbols.psam_destroy_generator(this.handle);
+    this.handle = null;
   }
 }

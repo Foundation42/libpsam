@@ -266,3 +266,61 @@ export interface SaveCompositeOptions {
   createdBy?: string;
   hyperparamsPreset?: 'balanced' | 'fast' | 'accurate' | 'tiny';
 }
+
+/**
+ * Residual activation configuration for stateful generator
+ */
+export interface ResidualConfig {
+  /** Maximum lookahead distance (default: 5) */
+  maxLookahead?: number;
+  /** Decay factor per step (default: 0.85) */
+  residualDecay?: number;
+  /** Blend weight for residual contributions (default: 0.6) */
+  residualBlend?: number;
+  /** Enable residual activation (default: false) */
+  enable?: boolean;
+}
+
+/**
+ * Salience tracking configuration for stateful generator
+ */
+export interface SalienceConfig {
+  /** Maximum number of salient anchors to track (default: 16) */
+  maxAnchors?: number;
+  /** EWMA half-life for frequency (default: 128.0) */
+  ewmaFreqHalflife?: number;
+  /** EWMA half-life for contribution (default: 64.0) */
+  ewmaContribHalflife?: number;
+  /** Weight for pop-out signal (default: 1.0) */
+  eta?: number;
+  /** Weight for IDF novelty (default: 0.25) */
+  kappa?: number;
+  /** Anchor blend weight (default: 0.3) */
+  beta?: number;
+  /** Long-range decay distance (default: 256.0) */
+  popDecayDistance?: number;
+  /** Minimum salience threshold (default: 0.1) */
+  minSalience?: number;
+  /** Enable salience tracking (default: false) */
+  enable?: boolean;
+}
+
+/**
+ * Stateful generator for sequential prediction with persistent state
+ */
+export interface PSAMGenerator {
+  /**
+   * Predict next tokens with stateful tracking
+   */
+  predict(context: TokenId[], maxPredictions?: number): InferenceResult;
+
+  /**
+   * Reset internal state (perplexity buffer, residuals, salience)
+   */
+  reset(): void;
+
+  /**
+   * Destroy generator and free resources
+   */
+  destroy(): void;
+}

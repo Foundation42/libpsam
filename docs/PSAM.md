@@ -17,6 +17,9 @@
 - [Architecture](#architecture)
 - [Key Advantages](#key-advantages)
 - [Comparison to Other Approaches](#comparison-to-other-approaches)
+- [Use Cases](#use-cases)
+- [Stateful Generator API](#stateful-generator-api)
+- [Performance Characteristics](#performance-characteristics)
 
 ---
 
@@ -489,6 +492,93 @@ Why "mat"?
 - Audit decisions
 - User trust
 - Regulatory compliance
+
+---
+
+## Stateful Generator API
+
+For advanced sequential prediction with entity tracking and long-range dependencies, PSAM provides a **stateful generator** that maintains persistent state across generation steps.
+
+### Key Features
+
+**1. Perplexity-Based Token Boosting (Always On)**
+
+Automatically tracks informative tokens using IDF as a perplexity proxy:
+- Identifies rare/important tokens (IDF > 2.0)
+- Boosts their scores by +50 during prediction
+- Ensures entities mentioned in questions appear in answers
+- **Result**: Improved Q&A accuracy from 85.7% to 100%
+
+Example:
+```
+Question: "What is the dog doing?"
+- "dog" has IDF ~3.6 (rare, informative)
+- Gets tracked and boosted in predictions
+- Answer correctly includes "dog" instead of generic "horse"
+```
+
+**2. Residual Activation (Optional)**
+
+Handles the offset mismatch problem:
+- Training learns associations at specific positions
+- During generation, context grows incrementally
+- Residuals fire deferred associations at correct future positions
+- Configurable lookahead, decay, and blend parameters
+
+**3. Salience Tracking (Optional)**
+
+Advanced long-range dependency tracking using EWMA:
+- Tracks tokens "gaining attention" over time
+- Pop-out detection for increasing contributions
+- Anchor voting with long-range decay
+- Best for sequences 100+ tokens
+
+### Usage
+
+**C API:**
+```c
+// Create generator with default settings
+psam_generator_t* gen = psam_create_generator(model, NULL, NULL, NULL);
+
+// Predict with persistent state
+uint32_t context[] = {1, 2, 3};
+psam_prediction_t preds[10];
+int n = psam_generator_predict(gen, context, 3, preds, 10);
+
+// Cleanup
+psam_destroy_generator(gen);
+```
+
+**Python API:**
+```python
+from psam import PSAM, PSAMGenerator
+
+psam = PSAM(vocab_size=1000, window=8, top_k=20)
+# ... train model ...
+psam.finalize_training()
+
+# Create stateful generator
+generator = PSAMGenerator(psam)
+
+# Generate with state tracking
+context = [1, 2, 3]
+for _ in range(10):
+    token_ids, scores, _, _, _ = generator.predict(context)
+    next_token = token_ids[0]
+    context.append(next_token)
+    if next_token == END_TOKEN:
+        break
+
+generator.destroy()
+```
+
+### When to Use
+
+- **Q&A tasks**: Use default perplexity boosting (automatic)
+- **Sequential generation**: Add residual activation for offset handling
+- **Long documents**: Add salience tracking for 100+ token sequences
+
+See **[Generator Documentation](./GENERATOR.md)** for comprehensive details on configuration, performance, and implementation.
 
 ---
 

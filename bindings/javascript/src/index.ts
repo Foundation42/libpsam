@@ -7,10 +7,10 @@
  */
 
 export * from './types.js';
-export { PSAMNative, LayeredCompositeNative, isNativeAvailable } from './native.js';
+export { PSAMNative, LayeredCompositeNative, PSAMGeneratorNative, isNativeAvailable } from './native.js';
 export { PSAMWASM, isWASMAvailable } from './wasm.js';
 
-import { PSAMNative, LayeredCompositeNative, isNativeAvailable, saveComposite as nativeSaveComposite } from './native.js';
+import { PSAMNative, LayeredCompositeNative, PSAMGeneratorNative, isNativeAvailable, saveComposite as nativeSaveComposite } from './native.js';
 import type { SaveCompositeOptions } from './types.js';
 import { PSAMWASM, isWASMAvailable } from './wasm.js';
 import type { TrainablePSAM } from './types.js';
@@ -91,6 +91,7 @@ export default {
   getBestImplementation,
   PSAMNative,
   LayeredCompositeNative,
+  PSAMGeneratorNative,
   PSAMWASM,
   isNativeAvailable,
   isWASMAvailable,

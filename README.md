@@ -12,6 +12,7 @@ A high-performance C library for PSAM (Position-Specific Association Memory) wit
 - 💾 **Tiny models** - KB to MB, not GB
 - 🌐 **Multi-language** - C, JavaScript/TypeScript, Python, WASM
 - 🔥 **Hot-swappable layers** - Domain adaptation without retraining
+- 🧠 **Stateful generation** - Entity tracking with perplexity boosting (85.7% → 100% Q&A accuracy)
 - 📦 **Zero dependencies** - Pure C11 (just pthreads + math lib)
 - ⚡ **Low latency** - 0.01-0.1ms per inference
 - 🎯 **Simple API** - Train, predict, save, load
@@ -224,6 +225,7 @@ export LIBPSAM_PATH=/path/to/libpsam/build/libpsam.so
 
 - **[How PSAM Works](./docs/PSAM.md)** - Theory, PPMI, IDF, architecture
 - **[API Reference](./docs/API.md)** - Complete API documentation
+- **[Stateful Generator](./docs/GENERATOR.md)** - Advanced sequential prediction with state tracking
 - **[Sampler Guide](./docs/Sampler.md)** - Temperature control and sampling configuration
 - **[.psamc Format](./docs/PSAMC_FORMAT.md)** - Composite model format with integrity verification
 - **[Build Guide](./docs/BUILDING.md)** - Build instructions
@@ -270,7 +272,41 @@ base.removeLayer('medical');
 base.addLayer('legal', legalModel, 1.5);
 ```
 
-### Sequence Generation
+### Stateful Sequential Generation
+
+The stateful generator maintains persistent state across predictions for improved entity tracking and long-range dependencies:
+
+```python
+from psam import PSAM, PSAMGenerator
+
+# Create and train model
+psam = PSAM(vocab_size=1000, window=8, top_k=20)
+# ... train your model ...
+psam.finalize_training()
+
+# Create stateful generator
+generator = PSAMGenerator(psam)
+
+# Generate with persistent state tracking
+context = [1, 2, 3]  # "What is the dog doing?"
+for _ in range(10):
+    token_ids, scores, _, _, _ = generator.predict(context)
+    next_token = token_ids[0]
+    context.append(next_token)
+    if next_token == END_TOKEN:
+        break
+
+generator.destroy()
+```
+
+**Key Features:**
+- 🎯 **Perplexity Boosting** - Automatically tracks and boosts informative tokens (85.7% → 100% on Q&A tasks)
+- 🔄 **Residual Activation** - Handles offset mismatches for varying context lengths
+- 🧠 **Salience Tracking** - Long-range dependency tracking for sequences 100+ tokens
+
+See **[Generator Documentation](./docs/GENERATOR.md)** for full details.
+
+### Basic Sequence Generation
 
 ```python
 def generate(psam, start_tokens, max_length=20):
