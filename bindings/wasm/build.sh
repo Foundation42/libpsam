@@ -28,6 +28,7 @@ SOURCES=(
     "$SRC_DIR/core/csr.c"
     "$SRC_DIR/core/train.c"
     "$SRC_DIR/core/infer.c"
+    "$SRC_DIR/core/inspect.c"
     "$SRC_DIR/composition/composite_layered.c"
     "$SRC_DIR/io/serialize.c"
 )
@@ -65,6 +66,9 @@ CFLAGS=(
         "_psam_composite_predict_with_sampler",
         "_psam_save",
         "_psam_load",
+        "_psam_load_from_memory",
+        "_psam_get_edges",
+        "_psam_get_config",
         "_psam_get_stats",
         "_psam_error_string",
         "_psam_version",

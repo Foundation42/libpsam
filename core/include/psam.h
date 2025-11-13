@@ -773,6 +773,77 @@ PSAM_API const char* psam_error_string(psam_error_t error);
  */
 PSAM_API const char* psam_version(void);
 
+/* ============================ Advanced Introspection ============================ */
+
+/**
+ * Edge descriptor for network visualization and analysis.
+ * Represents a single association edge in the model.
+ */
+typedef struct {
+    uint32_t source_token;    /* Source token ID */
+    uint32_t target_token;    /* Target token ID */
+    int16_t  offset;          /* Relative position offset in context window */
+    float    weight;          /* PPMI-transformed association weight */
+    uint32_t observations;    /* Number of times this association was observed */
+} psam_edge_t;
+
+/**
+ * Extract edge data from a model for visualization and analysis.
+ * Returns a subset of edges filtered by various criteria.
+ *
+ * @param model Model to inspect (must be finalized)
+ * @param source_token Filter by source token (use UINT32_MAX for all)
+ * @param min_weight Minimum edge weight threshold
+ * @param max_edges Maximum number of edges to return
+ * @param out_edges Output buffer for edges (caller-allocated)
+ * @return Number of edges written (>= 0), or negative error code
+ *
+ * Example - Get top 100 edges for token 42:
+ *   psam_edge_t edges[100];
+ *   int n = psam_get_edges(model, 42, 0.0f, 100, edges);
+ *   for (int i = 0; i < n; i++) {
+ *     printf("%u -> %u (offset %+d): weight=%.3f obs=%u\n",
+ *            edges[i].source_token, edges[i].target_token,
+ *            edges[i].offset, edges[i].weight, edges[i].observations);
+ *   }
+ *
+ * Example - Get all edges (WARNING: may be millions):
+ *   int n = psam_get_edges(model, UINT32_MAX, 0.0f, max_edges, edges);
+ */
+PSAM_API int psam_get_edges(
+    const psam_model_t* model,
+    uint32_t source_token,
+    float min_weight,
+    size_t max_edges,
+    psam_edge_t* out_edges
+);
+
+/**
+ * Get the model configuration.
+ * Useful for understanding model parameters when loading from file.
+ *
+ * @param model Model to query
+ * @param out_config Output structure (caller-allocated)
+ * @return PSAM_OK on success, error code otherwise
+ */
+PSAM_API psam_error_t psam_get_config(const psam_model_t* model, psam_config_t* out_config);
+
+/**
+ * Load model from memory buffer (for WASM/browser use).
+ * Alternative to psam_load() that works with in-memory data.
+ *
+ * @param buffer Pointer to serialized model data
+ * @param size Size of buffer in bytes
+ * @return Pointer to loaded model, or NULL on error
+ *
+ * Example (WASM):
+ *   // After user uploads file to browser
+ *   const uint8_t* fileData = ...;
+ *   size_t fileSize = ...;
+ *   psam_model_t* model = psam_load_from_memory(fileData, fileSize);
+ */
+PSAM_API psam_model_t* psam_load_from_memory(const void* buffer, size_t size);
+
 #ifdef __cplusplus
 }
 #endif
