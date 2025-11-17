@@ -7,6 +7,7 @@ set(PSAM_SOURCES
     src/core/train.c
     src/core/infer.c
     src/core/generator.c
+    src/core/inspect.c
     src/composition/composite_layered.c
     src/composition/vocab_alignment.c
     src/io/serialize.c

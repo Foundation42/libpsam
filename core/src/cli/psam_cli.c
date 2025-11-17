@@ -2581,9 +2581,26 @@ static int inspect_command(int argc, char** argv) {
         psam_get_provenance(model, &prov);
         char hash_hex[PSAM_SOURCE_HASH_SIZE * 2 + 1];
         print_hex(prov.source_hash, PSAM_SOURCE_HASH_SIZE, hash_hex, sizeof(hash_hex));
-        printf("{\"type\":\"psam\",\"vocab_size\":%u,\"row_count\":%u,\"edge_count\":%" PRIu64 ",\"created_by\":\"%s\",\"source_hash\":\"%s\"}\n",
+
+        // Test psam_get_edges API
+        psam_edge_t edges[500];
+        int num_edges = psam_get_edges(model, UINT32_MAX, 0.0f, 500, edges);
+
+        printf("{\"type\":\"psam\",\"vocab_size\":%u,\"row_count\":%u,\"edge_count\":%" PRIu64 ",\"created_by\":\"%s\",\"source_hash\":\"%s\",\"test_edges\":%d}\n",
                stats.vocab_size, stats.row_count, stats.edge_count,
-               prov.created_by, hash_hex);
+               prov.created_by, hash_hex, num_edges);
+
+        if (num_edges > 0) {
+            fprintf(stderr, "Sample edges (first 5):\n");
+            for (int i = 0; i < (num_edges < 5 ? num_edges : 5); i++) {
+                fprintf(stderr, "  [%d] %u -> %u: weight=%.3f offset=%d obs=%u\n",
+                       i, edges[i].source_token, edges[i].target_token,
+                       edges[i].weight, edges[i].offset, edges[i].observations);
+            }
+        } else {
+            fprintf(stderr, "WARNING: psam_get_edges returned %d (no edges extracted)\n", num_edges);
+        }
+
         psam_destroy(model);
     }
     return EXIT_OK;
